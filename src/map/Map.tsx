@@ -3,7 +3,7 @@ import maplibregl, { Map as MapLibre, LngLatBoundsLike } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useStore } from '../data/store';
 import { BASEMAPS } from './basemaps';
-import { BLENCATHRA_CENTRE } from '../data/normalise/coords';
+import { BLENCATHRA_CENTRE, FSC_BLENCATHRA } from '../data/normalise/coords';
 import { rampForVariable, normalise } from '../lib/colorScales';
 import type { Dataset, SampleRecord } from '../data/types';
 
@@ -14,22 +14,13 @@ interface FeatureSel {
 
 const TERRAIN_SOURCE_ID = 'terrain-dem';
 const HILLSHADE_LAYER_ID = 'hillshade-layer';
+// Rough Blencathra-area ground elevation used as a fallback when the
+// terrain tile hasn't streamed in yet.
+const FALLBACK_GROUND_M = 280;
 
-// Render altitudes from this Z=0 reference. We use the dataset's minimum
-// altitude so each track/profile starts at the visual "ground" — the user
-// always sees the climb relative to the launch, regardless of whether the
-// raw values are MSL or AGL.
-function effectiveAltitude(d: Dataset, raw: number): number {
-  const m = d.meta as { __altRef?: number };
-  const ref = m.__altRef ?? 0;
-  return Math.max(0, raw - ref);
-}
-
-function annotateAltRef(d: Dataset) {
-  const valid = d.records.map((r) => r.alt).filter((a): a is number => a != null && Number.isFinite(a));
-  if (!valid.length) return;
-  const min = Math.min(...valid);
-  (d.meta as { __altRef?: number }).__altRef = min;
+interface DatasetGroundInfo {
+  minAlt: number;
+  groundElev: number; // metres MSL — where the dataset's tower bases sit
 }
 
 export function Map({ basemap }: { basemap: string }) {
@@ -50,7 +41,7 @@ export function Map({ basemap }: { basemap: string }) {
       style,
       center: [BLENCATHRA_CENTRE.lon, BLENCATHRA_CENTRE.lat],
       zoom: 12.5,
-      pitch: 50,
+      pitch: 55,
       bearing: -20,
       attributionControl: { compact: true },
       maxPitch: 85,
@@ -58,6 +49,7 @@ export function Map({ basemap }: { basemap: string }) {
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true, showCompass: true }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }));
     map.addControl(new maplibregl.GlobeControl(), 'top-right');
+    map.addControl(new maplibregl.TerrainControl({ source: TERRAIN_SOURCE_ID, exaggeration: 1.4 }), 'top-right');
     mapRef.current = map;
 
     const onStyleLoad = () => {
@@ -66,9 +58,6 @@ export function Map({ basemap }: { basemap: string }) {
       } catch {
         /* ignore */
       }
-      // DEM for hillshade only — we do NOT enable 3D terrain because that
-      // would bury fill-extrusion towers (extrusion-base/height are absolute
-      // Z metres, not terrain-relative).
       if (!map.getSource(TERRAIN_SOURCE_ID)) {
         map.addSource(TERRAIN_SOURCE_ID, {
           type: 'raster-dem',
@@ -78,6 +67,7 @@ export function Map({ basemap }: { basemap: string }) {
           encoding: 'terrarium',
         } as any);
       }
+      // Hillshade adds visual relief alongside the 3D terrain.
       if (!map.getLayer(HILLSHADE_LAYER_ID)) {
         map.addLayer({
           id: HILLSHADE_LAYER_ID,
@@ -89,6 +79,27 @@ export function Map({ basemap }: { basemap: string }) {
             'hillshade-exaggeration': 0.5,
           },
         });
+      }
+      // Re-enable 3D terrain so the mountain is visible. Towers are now
+      // explicitly placed above ground using queryTerrainElevation.
+      try {
+        map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1.4 });
+      } catch {
+        /* older runtime */
+      }
+      // Sky layer for a horizon when pitched.
+      try {
+        map.setSky({
+          'sky-color': '#0b1220',
+          'horizon-color': '#27374d',
+          'fog-color': '#0b1220',
+          'sky-horizon-blend': 0.4,
+          'horizon-fog-blend': 0.4,
+          'fog-ground-blend': 0.4,
+          'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 12, 0.8],
+        } as any);
+      } catch {
+        /* ignore */
       }
       setReady(true);
     };
@@ -102,7 +113,7 @@ export function Map({ basemap }: { basemap: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Swap basemap style
+  // Basemap switch
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
@@ -113,19 +124,27 @@ export function Map({ basemap }: { basemap: string }) {
     }
   }, [basemap, ready]);
 
-  // Sync datasets → layers
+  // Dataset sync
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     syncDatasetLayers(map, datasets, (sel) => setSelection(sel), altitudeExaggeration, showAltitudeTowers);
+
+    // Once terrain tiles stream in, re-sync so tower bases sit at the
+    // freshly known terrain elevation rather than the fallback.
+    const onIdle = () => syncDatasetLayers(map, datasets, (sel) => setSelection(sel), altitudeExaggeration, showAltitudeTowers);
+    map.once('idle', onIdle);
+    return () => {
+      map.off('idle', onIdle);
+    };
   }, [datasets, ready, setSelection, altitudeExaggeration, showAltitudeTowers]);
 
-  // Fit bounds on dataset count change
+  // Fit-to-bounds on dataset count change
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     const bounds = computeBounds(datasets);
-    if (bounds) map.fitBounds(bounds, { padding: 80, animate: true, maxZoom: 14, pitch: 55 } as any);
+    if (bounds) map.fitBounds(bounds, { padding: 80, animate: true, maxZoom: 14, pitch: 60 } as any);
   }, [datasets.length, ready]);
 
   return <div ref={containerRef} className="map-container" />;
@@ -148,7 +167,36 @@ function computeBounds(datasets: Dataset[]): LngLatBoundsLike | null {
       if (r.lon > maxLon) maxLon = r.lon;
     }
   }
-  return any ? [[minLon, minLat], [maxLon, maxLat]] : null;
+  if (!any) return null;
+  if (Math.abs(maxLat - minLat) < 0.0005) {
+    minLat -= 0.002;
+    maxLat += 0.002;
+  }
+  if (Math.abs(maxLon - minLon) < 0.0005) {
+    minLon -= 0.002;
+    maxLon += 0.002;
+  }
+  return [[minLon, minLat], [maxLon, maxLat]];
+}
+
+function groundInfoFor(map: MapLibre, d: Dataset): DatasetGroundInfo {
+  const alts = d.records.map((r) => r.alt).filter((a): a is number => a != null && Number.isFinite(a));
+  const minAlt = alts.length ? Math.min(...alts) : 0;
+
+  // Use the first sample with valid lat/lon as the dataset's "anchor" for a
+  // terrain query. Falls back to the FSC if the data lacks fixes (sky-camera
+  // etc.), or finally to a constant Blencathra ground elevation.
+  const anchor = d.records.find((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon)) ?? null;
+  const lat = anchor?.lat ?? FSC_BLENCATHRA.lat;
+  const lon = anchor?.lon ?? FSC_BLENCATHRA.lon;
+  let terrain: number | null = null;
+  try {
+    terrain = map.queryTerrainElevation([lon, lat]);
+  } catch {
+    terrain = null;
+  }
+  const groundElev = terrain ?? Math.max(minAlt, FALLBACK_GROUND_M);
+  return { minAlt, groundElev };
 }
 
 function syncDatasetLayers(
@@ -161,7 +209,6 @@ function syncDatasetLayers(
   const wantedSrcIds = new Set<string>();
   const wantedLayerIds = new Set<string>();
   for (const d of datasets) {
-    annotateAltRef(d);
     wantedSrcIds.add(`ds-${d.id}-src`);
     wantedSrcIds.add(`ds-${d.id}-towers-src`);
     wantedLayerIds.add(`ds-${d.id}-pts`);
@@ -189,7 +236,8 @@ function syncDatasetLayers(
     const towersLayer = `ds-${d.id}-towers`;
     const capsLayer = `ds-${d.id}-towercaps`;
 
-    const { points: ptsFC, line, towers: towersFC } = datasetToGeoJSON(d, altExaggeration);
+    const ground = groundInfoFor(map, d);
+    const { points: ptsFC, line, towers: towersFC } = datasetToGeoJSON(d, altExaggeration, ground);
 
     const flatFC: GeoJSON.FeatureCollection = {
       type: 'FeatureCollection',
@@ -203,8 +251,10 @@ function syncDatasetLayers(
     if (existingT) (existingT as maplibregl.GeoJSONSource).setData(towersFC);
     else map.addSource(towersSrcId, { type: 'geojson', data: towersFC });
 
-    // Track line
-    if ((d.kind === 'track' || d.kind === 'profile') && d.records.length > 1) {
+    // Track LINE — only for tracks (not profiles, whose records share lat/lon
+    // and would render as a degenerate line). MapLibre drapes lines onto the
+    // terrain surface, so this is the path-on-the-ground projection.
+    if (d.kind === 'track' && line) {
       if (!map.getLayer(lineLayer)) {
         map.addLayer({
           id: lineLayer,
@@ -222,6 +272,8 @@ function syncDatasetLayers(
         map.setPaintProperty(lineLayer, 'line-opacity', d.style.opacity);
       }
       map.setLayoutProperty(lineLayer, 'visibility', d.style.visible ? 'visible' : 'none');
+    } else if (map.getLayer(lineLayer)) {
+      map.setLayoutProperty(lineLayer, 'visibility', 'none');
     }
 
     // 3D towers
@@ -234,9 +286,9 @@ function syncDatasetLayers(
           source: towersSrcId,
           paint: {
             'fill-extrusion-color': ['coalesce', ['get', '__color'], d.style.color],
-            'fill-extrusion-base': 0,
+            'fill-extrusion-base': ['get', '__base'],
             'fill-extrusion-height': ['get', '__height'],
-            'fill-extrusion-opacity': 0.55,
+            'fill-extrusion-opacity': 0.6,
             'fill-extrusion-vertical-gradient': true,
           },
         });
@@ -253,7 +305,7 @@ function syncDatasetLayers(
       }
       map.setLayoutProperty(towersLayer, 'visibility', d.style.visible ? 'visible' : 'none');
 
-      // Bright caps so the tops of towers are visible at distance
+      // Cap on top so the apex is visible at distance.
       if (!map.getLayer(capsLayer)) {
         map.addLayer({
           id: capsLayer,
@@ -261,7 +313,7 @@ function syncDatasetLayers(
           source: towersSrcId,
           paint: {
             'fill-extrusion-color': ['coalesce', ['get', '__color'], d.style.color],
-            'fill-extrusion-base': ['max', 0, ['-', ['get', '__height'], 6]],
+            'fill-extrusion-base': ['max', ['get', '__base'], ['-', ['get', '__height'], 8]],
             'fill-extrusion-height': ['get', '__height'],
             'fill-extrusion-opacity': 1,
           },
@@ -273,7 +325,7 @@ function syncDatasetLayers(
       if (map.getLayer(capsLayer)) map.setLayoutProperty(capsLayer, 'visibility', 'none');
     }
 
-    // Points
+    // Ground points (always)
     if (!map.getLayer(ptsLayer)) {
       map.addLayer({
         id: ptsLayer,
@@ -303,7 +355,7 @@ function syncDatasetLayers(
   }
 }
 
-function datasetToGeoJSON(d: Dataset, altExaggeration: number) {
+function datasetToGeoJSON(d: Dataset, altExaggeration: number, ground: DatasetGroundInfo) {
   const colorBy = d.style.colorBy;
   let min = Infinity;
   let max = -Infinity;
@@ -337,13 +389,14 @@ function datasetToGeoJSON(d: Dataset, altExaggeration: number) {
     lineCoords.push([r.lon, r.lat]);
 
     if (r.alt != null && Number.isFinite(r.alt)) {
-      const eff = effectiveAltitude(d, r.alt);
-      if (eff > 0.5) {
-        const height = eff * altExaggeration;
-        // Larger footprint so towers are easy to see; for sondes we use a
-        // taller-than-wide column. Width adapts to height so very tall
-        // sonde towers stay readable.
-        const halfWidth = Math.min(40, Math.max(8, Math.log10(height + 10) * 6));
+      // Climb above the dataset's lowest sample, mapped above the local
+      // terrain so towers always sit on the ground regardless of whether
+      // the source reports MSL or AGL.
+      const climb = Math.max(0, r.alt - ground.minAlt);
+      const base = ground.groundElev;
+      const height = base + climb * altExaggeration;
+      if (height - base > 0.5) {
+        const halfWidth = Math.min(60, Math.max(8, Math.log10(height - base + 10) * 8));
         const poly = squareAround(r.lon, r.lat, halfWidth);
         towerFeatures.push({
           type: 'Feature',
@@ -351,6 +404,7 @@ function datasetToGeoJSON(d: Dataset, altExaggeration: number) {
           properties: {
             __recordIndex: i,
             __color: color,
+            __base: base,
             __height: height,
           },
         });
@@ -358,9 +412,17 @@ function datasetToGeoJSON(d: Dataset, altExaggeration: number) {
     }
   });
 
+  // Line: only emit for genuine tracks (kind='track') where lat/lon vary.
   let line: GeoJSON.Feature | null = null;
-  if ((d.kind === 'track' || d.kind === 'profile') && lineCoords.length > 1) {
-    line = { type: 'Feature', geometry: { type: 'LineString', coordinates: lineCoords }, properties: {} };
+  if (d.kind === 'track' && lineCoords.length > 1) {
+    const distinct = new Set<string>();
+    for (const c of lineCoords) {
+      distinct.add(`${c[0].toFixed(5)},${c[1].toFixed(5)}`);
+      if (distinct.size > 1) break;
+    }
+    if (distinct.size > 1) {
+      line = { type: 'Feature', geometry: { type: 'LineString', coordinates: lineCoords }, properties: {} };
+    }
   }
   return {
     points: { type: 'FeatureCollection' as const, features: pointFeatures },

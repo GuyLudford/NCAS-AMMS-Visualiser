@@ -4,16 +4,6 @@ import { GROUP_INFO } from '../data/types';
 import type { Dataset } from '../data/types';
 import { parseFiles } from '../data/parsers';
 
-const CATEGORY_ORDER = [
-  'UAV',
-  'Windsond',
-  'Sky-camera met',
-  'Kestrel 5500L',
-  'Hill traverse',
-  'Photo',
-  'Other',
-];
-
 function categoryFor(d: Dataset): string {
   const inst = String(d.meta.instrument ?? '');
   if (inst.startsWith('UAV')) return 'UAV';
@@ -21,9 +11,25 @@ function categoryFor(d: Dataset): string {
   if (inst.startsWith('Sky-camera')) return 'Sky-camera met';
   if (inst.startsWith('Kestrel')) return 'Kestrel 5500L';
   if (inst.startsWith('Hill traverse')) return 'Hill traverse';
+  if (inst.startsWith('HOBO')) return 'HOBO reference';
+  if (inst.startsWith('NCAS backpack')) return 'Backpack logger';
+  if (inst.startsWith('KML') || inst.startsWith('GPX')) return 'GPS tracks';
   if (inst === 'Photo') return 'Photo';
   return 'Other';
 }
+
+const CATEGORY_ORDER = [
+  'UAV',
+  'Windsond',
+  'Sky-camera met',
+  'Kestrel 5500L',
+  'Hill traverse',
+  'HOBO reference',
+  'Backpack logger',
+  'GPS tracks',
+  'Photo',
+  'Other',
+];
 
 export function Sidebar() {
   const datasets = useStore((s) => s.datasets);

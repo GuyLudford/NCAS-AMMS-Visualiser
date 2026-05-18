@@ -7,7 +7,7 @@ import { parseTime } from '../normalise/time';
 export async function parseGpx(file: File): Promise<ParseResult> {
   const text = await file.text();
   const doc = new DOMParser().parseFromString(text, 'application/xml');
-  if (doc.querySelector('parsererror')) {
+  if (doc.getElementsByTagName('parsererror').length > 0) {
     return { datasets: [], warnings: [`${file.name}: invalid GPX/XML`] };
   }
   const datasets: ParseResult['datasets'] = [];

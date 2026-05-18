@@ -6,7 +6,7 @@ import type { ParseResult } from '../types';
 export async function parseKml(file: File): Promise<ParseResult> {
   const text = await file.text();
   const doc = new DOMParser().parseFromString(text, 'application/xml');
-  if (doc.querySelector('parsererror')) {
+  if (doc.getElementsByTagName('parsererror').length > 0) {
     return { datasets: [], warnings: [`${file.name}: invalid XML`] };
   }
 
@@ -42,11 +42,17 @@ export async function parseKml(file: File): Promise<ParseResult> {
     }
   }
 
+  // Windsond KMLs reference windsond.com in their style icons — treat them
+  // as a sonde track so they group with the other sonde data in the sidebar.
+  const isWindsond = /windsond\.com/i.test(text);
+  const instrumentTrack = isWindsond ? 'Windsond KML' : 'KML track';
+  const instrumentPoint = isWindsond ? 'Windsond KML waypoints' : 'KML waypoints';
+
   const datasets: ParseResult['datasets'] = [];
   if (trackCoords.length > 1) {
     datasets.push({
       id: v4(),
-      name: `KML track ${trackName || file.name}`,
+      name: `${isWindsond ? 'Sonde KML' : 'KML track'} ${trackName || file.name}`,
       source: { filename: file.name },
       kind: 'track',
       variables: [],
@@ -56,20 +62,20 @@ export async function parseKml(file: File): Promise<ParseResult> {
         alt: p.alt,
         values: {},
       })),
-      style: { color: '#a855f7', visible: true, opacity: 0.85, colorBy: 'alt' },
-      meta: { instrument: 'KML track', sourceTz: 'utc', altitudeRef: 'MSL' },
+      style: { color: isWindsond ? '#a855f7' : '#22d3ee', visible: true, opacity: 0.9, colorBy: 'alt' },
+      meta: { instrument: instrumentTrack, sourceTz: 'utc', altitudeRef: 'MSL' },
     });
   }
   if (points.length) {
     datasets.push({
       id: v4(),
-      name: `KML waypoints ${file.name}`,
+      name: `${isWindsond ? 'Sonde KML waypoints' : 'KML waypoints'} ${file.name}`,
       source: { filename: file.name },
       kind: 'points',
       variables: [],
       records: points,
-      style: { color: '#fb7185', visible: true, opacity: 1 },
-      meta: { instrument: 'KML waypoints' },
+      style: { color: isWindsond ? '#d946ef' : '#fb7185', visible: true, opacity: 1 },
+      meta: { instrument: instrumentPoint },
     });
   }
   return { datasets, warnings: datasets.length ? [] : [`${file.name}: no placemarks found`] };
