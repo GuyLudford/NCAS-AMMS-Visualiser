@@ -140,23 +140,30 @@ function UPlotChart({
   const ref = useRef<HTMLDivElement>(null);
   const data = useMemo(() => [x, y] as uPlot.AlignedData, [x, y]);
   useEffect(() => {
-    if (!ref.current) return;
-    const opts: uPlot.Options = {
-      title,
-      width: ref.current.clientWidth || 360,
-      height: 200,
-      scales: { x: { time: xLabel === 'time' } },
-      axes: [
-        { label: xLabel },
-        { label: yLabel },
-      ],
-      series: [
-        {},
-        { stroke: '#3b82f6', width: 2, points: { show: x.length < 200 } },
-      ],
+    if (!ref.current || x.length < 2) return;
+    let u: uPlot | null = null;
+    const raf = requestAnimationFrame(() => {
+      if (!ref.current) return;
+      const opts: uPlot.Options = {
+        title,
+        width: ref.current.clientWidth || 360,
+        height: 200,
+        scales: { x: { time: xLabel === 'time' } },
+        axes: [
+          { label: xLabel, stroke: '#94a3b8', grid: { stroke: '#1f2a44' } },
+          { label: yLabel, stroke: '#94a3b8', grid: { stroke: '#1f2a44' } },
+        ],
+        series: [
+          {},
+          { label: yLabel, stroke: '#60a5fa', width: 1.6, points: { show: x.length < 300, fill: '#60a5fa' } },
+        ],
+      };
+      u = new uPlot(opts, data, ref.current);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      u?.destroy();
     };
-    const u = new uPlot(opts, data, ref.current);
-    return () => u.destroy();
   }, [data, title, xLabel, yLabel, x.length]);
   return <div className="uplot-host" ref={ref} />;
 }

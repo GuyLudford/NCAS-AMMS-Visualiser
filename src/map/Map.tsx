@@ -13,6 +13,24 @@ interface FeatureSel {
 }
 
 const TERRAIN_SOURCE_ID = 'terrain-dem';
+const HILLSHADE_LAYER_ID = 'hillshade-layer';
+
+// Render altitudes from this Z=0 reference. We use the dataset's minimum
+// altitude so each track/profile starts at the visual "ground" — the user
+// always sees the climb relative to the launch, regardless of whether the
+// raw values are MSL or AGL.
+function effectiveAltitude(d: Dataset, raw: number): number {
+  const m = d.meta as { __altRef?: number };
+  const ref = m.__altRef ?? 0;
+  return Math.max(0, raw - ref);
+}
+
+function annotateAltRef(d: Dataset) {
+  const valid = d.records.map((r) => r.alt).filter((a): a is number => a != null && Number.isFinite(a));
+  if (!valid.length) return;
+  const min = Math.min(...valid);
+  (d.meta as { __altRef?: number }).__altRef = min;
+}
 
 export function Map({ basemap }: { basemap: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -23,7 +41,7 @@ export function Map({ basemap }: { basemap: string }) {
   const altitudeExaggeration = useStore((s) => s.altitudeExaggeration);
   const showAltitudeTowers = useStore((s) => s.showAltitudeTowers);
 
-  // Initialise map (once)
+  // Initialise once
   useEffect(() => {
     if (!containerRef.current) return;
     const style = BASEMAPS.find((b) => b.id === basemap)?.style ?? BASEMAPS[0].style;
@@ -31,8 +49,8 @@ export function Map({ basemap }: { basemap: string }) {
       container: containerRef.current,
       style,
       center: [BLENCATHRA_CENTRE.lon, BLENCATHRA_CENTRE.lat],
-      zoom: 12,
-      pitch: 45,
+      zoom: 12.5,
+      pitch: 50,
       bearing: -20,
       attributionControl: { compact: true },
       maxPitch: 85,
@@ -42,42 +60,49 @@ export function Map({ basemap }: { basemap: string }) {
     map.addControl(new maplibregl.GlobeControl(), 'top-right');
     mapRef.current = map;
 
-    map.on('style.load', () => {
-      // Globe projection — supported in MapLibre 5+.
+    const onStyleLoad = () => {
       try {
         (map as any).setProjection?.({ type: 'globe' });
       } catch {
-        /* older runtime */
+        /* ignore */
       }
-      // Terrain (free AWS DEM tiles)
+      // DEM for hillshade only — we do NOT enable 3D terrain because that
+      // would bury fill-extrusion towers (extrusion-base/height are absolute
+      // Z metres, not terrain-relative).
       if (!map.getSource(TERRAIN_SOURCE_ID)) {
         map.addSource(TERRAIN_SOURCE_ID, {
           type: 'raster-dem',
-          tiles: [
-            'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png',
-          ],
+          tiles: ['https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png'],
           tileSize: 256,
           maxzoom: 15,
           encoding: 'terrarium',
         } as any);
       }
-      try {
-        map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1.4 });
-      } catch {
-        /* ignore */
+      if (!map.getLayer(HILLSHADE_LAYER_ID)) {
+        map.addLayer({
+          id: HILLSHADE_LAYER_ID,
+          type: 'hillshade',
+          source: TERRAIN_SOURCE_ID,
+          paint: {
+            'hillshade-shadow-color': '#0a0a14',
+            'hillshade-highlight-color': '#ffffff',
+            'hillshade-exaggeration': 0.5,
+          },
+        });
       }
       setReady(true);
-    });
+    };
+    map.on('style.load', onStyleLoad);
     return () => {
+      map.off('style.load', onStyleLoad);
       map.remove();
       mapRef.current = null;
       setReady(false);
     };
-    // intentionally ignore basemap here; handled below
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Swap style on basemap change
+  // Swap basemap style
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
@@ -88,19 +113,19 @@ export function Map({ basemap }: { basemap: string }) {
     }
   }, [basemap, ready]);
 
-  // Sync datasets → map layers
+  // Sync datasets → layers
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     syncDatasetLayers(map, datasets, (sel) => setSelection(sel), altitudeExaggeration, showAltitudeTowers);
   }, [datasets, ready, setSelection, altitudeExaggeration, showAltitudeTowers]);
 
-  // Fit bounds when dataset count changes
+  // Fit bounds on dataset count change
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     const bounds = computeBounds(datasets);
-    if (bounds) map.fitBounds(bounds, { padding: 80, animate: true, maxZoom: 14, pitch: 50 } as any);
+    if (bounds) map.fitBounds(bounds, { padding: 80, animate: true, maxZoom: 14, pitch: 55 } as any);
   }, [datasets.length, ready]);
 
   return <div ref={containerRef} className="map-container" />;
@@ -133,55 +158,58 @@ function syncDatasetLayers(
   altExaggeration: number,
   showTowers: boolean,
 ) {
-  const wantedIds = new Set<string>();
+  const wantedSrcIds = new Set<string>();
+  const wantedLayerIds = new Set<string>();
   for (const d of datasets) {
-    wantedIds.add(`ds-${d.id}-pts`);
-    wantedIds.add(`ds-${d.id}-line`);
-    wantedIds.add(`ds-${d.id}-towers`);
-    wantedIds.add(`ds-${d.id}-src`);
-    wantedIds.add(`ds-${d.id}-towers-src`);
+    annotateAltRef(d);
+    wantedSrcIds.add(`ds-${d.id}-src`);
+    wantedSrcIds.add(`ds-${d.id}-towers-src`);
+    wantedLayerIds.add(`ds-${d.id}-pts`);
+    wantedLayerIds.add(`ds-${d.id}-line`);
+    wantedLayerIds.add(`ds-${d.id}-towers`);
+    wantedLayerIds.add(`ds-${d.id}-towercaps`);
   }
   const style = map.getStyle();
   for (const layer of style?.layers ?? []) {
-    if (layer.id.startsWith('ds-') && !wantedIds.has(layer.id) && map.getLayer(layer.id)) {
+    if (layer.id.startsWith('ds-') && !wantedLayerIds.has(layer.id) && map.getLayer(layer.id)) {
       map.removeLayer(layer.id);
     }
   }
   for (const srcId of Object.keys(style?.sources ?? {})) {
-    if (srcId.startsWith('ds-') && !wantedIds.has(srcId) && map.getSource(srcId)) {
+    if (srcId.startsWith('ds-') && !wantedSrcIds.has(srcId) && map.getSource(srcId)) {
       map.removeSource(srcId);
     }
   }
 
   for (const d of datasets) {
-    const sourceId = `ds-${d.id}-src`;
+    const srcId = `ds-${d.id}-src`;
     const towersSrcId = `ds-${d.id}-towers-src`;
-    const pointsLayerId = `ds-${d.id}-pts`;
-    const lineLayerId = `ds-${d.id}-line`;
-    const towersLayerId = `ds-${d.id}-towers`;
-    const { points: pointsFC, line: lineFC, towers: towersFC } = datasetToGeoJSON(d, altExaggeration);
+    const ptsLayer = `ds-${d.id}-pts`;
+    const lineLayer = `ds-${d.id}-line`;
+    const towersLayer = `ds-${d.id}-towers`;
+    const capsLayer = `ds-${d.id}-towercaps`;
 
-    // Points + line source
+    const { points: ptsFC, line, towers: towersFC } = datasetToGeoJSON(d, altExaggeration);
+
     const flatFC: GeoJSON.FeatureCollection = {
       type: 'FeatureCollection',
-      features: [...pointsFC.features, ...(lineFC ? [lineFC] : [])],
+      features: [...ptsFC.features, ...(line ? [line] : [])],
     };
-    const existing = map.getSource(sourceId);
+    const existing = map.getSource(srcId);
     if (existing) (existing as maplibregl.GeoJSONSource).setData(flatFC);
-    else map.addSource(sourceId, { type: 'geojson', data: flatFC });
+    else map.addSource(srcId, { type: 'geojson', data: flatFC });
 
-    // Tower source (polygons for fill-extrusion)
-    const existingTowers = map.getSource(towersSrcId);
-    if (existingTowers) (existingTowers as maplibregl.GeoJSONSource).setData(towersFC);
+    const existingT = map.getSource(towersSrcId);
+    if (existingT) (existingT as maplibregl.GeoJSONSource).setData(towersFC);
     else map.addSource(towersSrcId, { type: 'geojson', data: towersFC });
 
-    // Line layer for tracks
+    // Track line
     if ((d.kind === 'track' || d.kind === 'profile') && d.records.length > 1) {
-      if (!map.getLayer(lineLayerId)) {
+      if (!map.getLayer(lineLayer)) {
         map.addLayer({
-          id: lineLayerId,
+          id: lineLayer,
           type: 'line',
-          source: sourceId,
+          source: srcId,
           filter: ['==', ['geometry-type'], 'LineString'],
           paint: {
             'line-color': d.style.color,
@@ -190,48 +218,67 @@ function syncDatasetLayers(
           },
         });
       } else {
-        map.setPaintProperty(lineLayerId, 'line-color', d.style.color);
-        map.setPaintProperty(lineLayerId, 'line-opacity', d.style.opacity);
+        map.setPaintProperty(lineLayer, 'line-color', d.style.color);
+        map.setPaintProperty(lineLayer, 'line-opacity', d.style.opacity);
       }
-      map.setLayoutProperty(lineLayerId, 'visibility', d.style.visible ? 'visible' : 'none');
+      map.setLayoutProperty(lineLayer, 'visibility', d.style.visible ? 'visible' : 'none');
     }
 
-    // Tower (3D extrusion) layer
-    if (towersFC.features.length > 0 && showTowers) {
-      if (!map.getLayer(towersLayerId)) {
+    // 3D towers
+    const hasTowers = towersFC.features.length > 0 && showTowers;
+    if (hasTowers) {
+      if (!map.getLayer(towersLayer)) {
         map.addLayer({
-          id: towersLayerId,
+          id: towersLayer,
           type: 'fill-extrusion',
           source: towersSrcId,
           paint: {
             'fill-extrusion-color': ['coalesce', ['get', '__color'], d.style.color],
-            'fill-extrusion-base': ['coalesce', ['get', '__base'], 0],
+            'fill-extrusion-base': 0,
             'fill-extrusion-height': ['get', '__height'],
-            'fill-extrusion-opacity': 0.6,
+            'fill-extrusion-opacity': 0.55,
+            'fill-extrusion-vertical-gradient': true,
           },
         });
-        map.on('click', towersLayerId, (e) => {
+        map.on('click', towersLayer, (e) => {
           const f = e.features?.[0];
           if (!f) return;
           const ri = (f.properties as any).__recordIndex as number;
           onSelect({ datasetId: d.id, recordIndex: ri });
         });
-        map.on('mouseenter', towersLayerId, () => (map.getCanvas().style.cursor = 'pointer'));
-        map.on('mouseleave', towersLayerId, () => (map.getCanvas().style.cursor = ''));
+        map.on('mouseenter', towersLayer, () => (map.getCanvas().style.cursor = 'pointer'));
+        map.on('mouseleave', towersLayer, () => (map.getCanvas().style.cursor = ''));
       } else {
-        map.setPaintProperty(towersLayerId, 'fill-extrusion-color', ['coalesce', ['get', '__color'], d.style.color]);
+        map.setPaintProperty(towersLayer, 'fill-extrusion-color', ['coalesce', ['get', '__color'], d.style.color]);
       }
-      map.setLayoutProperty(towersLayerId, 'visibility', d.style.visible ? 'visible' : 'none');
-    } else if (map.getLayer(towersLayerId)) {
-      map.setLayoutProperty(towersLayerId, 'visibility', 'none');
+      map.setLayoutProperty(towersLayer, 'visibility', d.style.visible ? 'visible' : 'none');
+
+      // Bright caps so the tops of towers are visible at distance
+      if (!map.getLayer(capsLayer)) {
+        map.addLayer({
+          id: capsLayer,
+          type: 'fill-extrusion',
+          source: towersSrcId,
+          paint: {
+            'fill-extrusion-color': ['coalesce', ['get', '__color'], d.style.color],
+            'fill-extrusion-base': ['max', 0, ['-', ['get', '__height'], 6]],
+            'fill-extrusion-height': ['get', '__height'],
+            'fill-extrusion-opacity': 1,
+          },
+        });
+      }
+      map.setLayoutProperty(capsLayer, 'visibility', d.style.visible ? 'visible' : 'none');
+    } else {
+      if (map.getLayer(towersLayer)) map.setLayoutProperty(towersLayer, 'visibility', 'none');
+      if (map.getLayer(capsLayer)) map.setLayoutProperty(capsLayer, 'visibility', 'none');
     }
 
-    // Points layer (always)
-    if (!map.getLayer(pointsLayerId)) {
+    // Points
+    if (!map.getLayer(ptsLayer)) {
       map.addLayer({
-        id: pointsLayerId,
+        id: ptsLayer,
         type: 'circle',
-        source: sourceId,
+        source: srcId,
         filter: ['==', ['geometry-type'], 'Point'],
         paint: {
           'circle-radius': d.kind === 'photos' ? 8 : 4,
@@ -241,25 +288,22 @@ function syncDatasetLayers(
           'circle-opacity': d.style.opacity,
         },
       });
-      map.on('click', pointsLayerId, (e) => {
+      map.on('click', ptsLayer, (e) => {
         const f = e.features?.[0];
         if (!f) return;
         const ri = (f.properties as any).__recordIndex as number;
         onSelect({ datasetId: d.id, recordIndex: ri });
       });
-      map.on('mouseenter', pointsLayerId, () => (map.getCanvas().style.cursor = 'pointer'));
-      map.on('mouseleave', pointsLayerId, () => (map.getCanvas().style.cursor = ''));
+      map.on('mouseenter', ptsLayer, () => (map.getCanvas().style.cursor = 'pointer'));
+      map.on('mouseleave', ptsLayer, () => (map.getCanvas().style.cursor = ''));
     } else {
-      map.setPaintProperty(pointsLayerId, 'circle-opacity', d.style.opacity);
+      map.setPaintProperty(ptsLayer, 'circle-opacity', d.style.opacity);
     }
-    map.setLayoutProperty(pointsLayerId, 'visibility', d.style.visible ? 'visible' : 'none');
+    map.setLayoutProperty(ptsLayer, 'visibility', d.style.visible ? 'visible' : 'none');
   }
 }
 
-function datasetToGeoJSON(
-  d: Dataset,
-  altExaggeration: number,
-): { points: GeoJSON.FeatureCollection; line: GeoJSON.Feature | null; towers: GeoJSON.FeatureCollection } {
+function datasetToGeoJSON(d: Dataset, altExaggeration: number) {
   const colorBy = d.style.colorBy;
   let min = Infinity;
   let max = -Infinity;
@@ -292,35 +336,36 @@ function datasetToGeoJSON(
     });
     lineCoords.push([r.lon, r.lat]);
 
-    // Build a vertical "altitude tower" if the sample has an altitude.
     if (r.alt != null && Number.isFinite(r.alt)) {
-      const heightExaggerated = r.alt * altExaggeration;
-      const poly = squareAround(r.lon, r.lat, 6); // 6m wide
-      towerFeatures.push({
-        type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: [poly] },
-        properties: {
-          __recordIndex: i,
-          __color: color,
-          __height: heightExaggerated,
-          __base: 0,
-        },
-      });
+      const eff = effectiveAltitude(d, r.alt);
+      if (eff > 0.5) {
+        const height = eff * altExaggeration;
+        // Larger footprint so towers are easy to see; for sondes we use a
+        // taller-than-wide column. Width adapts to height so very tall
+        // sonde towers stay readable.
+        const halfWidth = Math.min(40, Math.max(8, Math.log10(height + 10) * 6));
+        const poly = squareAround(r.lon, r.lat, halfWidth);
+        towerFeatures.push({
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [poly] },
+          properties: {
+            __recordIndex: i,
+            __color: color,
+            __height: height,
+          },
+        });
+      }
     }
   });
 
   let line: GeoJSON.Feature | null = null;
   if ((d.kind === 'track' || d.kind === 'profile') && lineCoords.length > 1) {
-    line = {
-      type: 'Feature',
-      geometry: { type: 'LineString', coordinates: lineCoords },
-      properties: {},
-    };
+    line = { type: 'Feature', geometry: { type: 'LineString', coordinates: lineCoords }, properties: {} };
   }
   return {
-    points: { type: 'FeatureCollection', features: pointFeatures },
+    points: { type: 'FeatureCollection' as const, features: pointFeatures },
     line,
-    towers: { type: 'FeatureCollection', features: towerFeatures },
+    towers: { type: 'FeatureCollection' as const, features: towerFeatures },
   };
 }
 

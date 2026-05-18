@@ -69,8 +69,25 @@ main { flex: 1 1 auto; position: relative; min-width: 0; overflow: hidden; }
   border-radius: 6px;
   padding: 8px;
 }
-.plot-host { width: 100%; height: 280px; }
-.plot-host .u-title { color: var(--text) !important; }
+.plot-host { width: 100%; height: 280px; min-height: 280px; }
+
+/* Dark-theme overrides for uPlot — without these, the default black text
+ * on the axes and titles is invisible against the dark panel background. */
+.u-title { color: var(--text) !important; font-size: 12px !important; font-weight: 500 !important; }
+.u-legend { color: var(--text) !important; background: transparent !important; font-size: 11px !important; }
+.u-legend .u-label, .u-legend .u-value { color: var(--text) !important; }
+.u-axis text { fill: var(--muted) !important; }
+.u-axis .u-grid, .u-axis .u-ticks { stroke: var(--border) !important; }
+.uplot { color: var(--text); }
+.u-over, .u-under { background: transparent !important; }
+.u-cursor-pt { background: var(--accent) !important; }
+
+.no-plots {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
 
 .sidebar {
   width: 300px;

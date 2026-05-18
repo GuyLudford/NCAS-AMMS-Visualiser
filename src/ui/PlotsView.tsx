@@ -9,6 +9,7 @@ export function PlotsView() {
   const dataset = useStore((s) => s.datasets.find((d) => d.id === id) ?? null);
   const close = useStore((s) => s.expandDataset);
   if (!dataset) return null;
+  const plots = buildPlots(dataset);
 
   return (
     <div className="plots-view">
@@ -25,11 +26,17 @@ export function PlotsView() {
         </div>
         <div />
       </header>
-      <div className="plots-grid">
-        {buildPlots(dataset).map((p, i) => (
-          <PlotCard key={i} {...p} />
-        ))}
-      </div>
+      {plots.length === 0 ? (
+        <div className="no-plots">
+          No plottable variables found for this dataset (no time-series and no altitude profile).
+        </div>
+      ) : (
+        <div className="plots-grid">
+          {plots.map((p, i) => (
+            <PlotCard key={`${dataset.id}-${i}-${p.title}`} {...p} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -41,7 +48,6 @@ interface PlotSpec {
   x: number[];
   y: number[];
   isTime?: boolean;
-  inverted?: boolean;
 }
 
 function buildPlots(d: Dataset): PlotSpec[] {
@@ -49,26 +55,38 @@ function buildPlots(d: Dataset): PlotSpec[] {
   const hasAlt = d.records.some((r) => r.alt != null && Number.isFinite(r.alt));
   const hasTime = d.records.some((r) => !!r.time);
 
-  // For every variable on every record, build either a vs-time plot or a vs-altitude plot.
+  // Altitude vs time first if both present
+  if (hasAlt && hasTime) {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const r of d.records) {
+      if (!r.time || r.alt == null) continue;
+      xs.push(new Date(r.time).getTime() / 1000);
+      ys.push(r.alt);
+    }
+    if (xs.length > 1) {
+      plots.push({ title: 'Altitude vs time', xLabel: 'Time', yLabel: 'Altitude (m)', x: xs, y: ys, isTime: true });
+    }
+  }
+
   for (const v of d.variables) {
-    // T-vs-altitude is the headline for traverses/profiles/UAV climbs
+    // For tracks and profiles: variable vs altitude (sort by altitude for cleaner lines)
     if (hasAlt && (d.kind === 'track' || d.kind === 'profile')) {
-      const xs: number[] = [];
-      const ys: number[] = [];
+      const pairs: [number, number][] = [];
       for (const r of d.records) {
         const val = pickN(r, v.key);
         if (val != null && r.alt != null && Number.isFinite(r.alt)) {
-          xs.push(val);
-          ys.push(r.alt);
+          pairs.push([val, r.alt]);
         }
       }
-      if (xs.length > 1) {
+      if (pairs.length > 1) {
+        pairs.sort((a, b) => a[1] - b[1]);
         plots.push({
           title: `${v.label} vs Altitude`,
           xLabel: `${v.label} (${v.unit})`,
           yLabel: 'Altitude (m)',
-          x: xs,
-          y: ys,
+          x: pairs.map((p) => p[0]),
+          y: pairs.map((p) => p[1]),
         });
       }
     }
@@ -96,51 +114,69 @@ function buildPlots(d: Dataset): PlotSpec[] {
       }
     }
   }
-
-  // Altitude vs time for tracks
-  if (hasAlt && hasTime) {
-    const xs: number[] = [];
-    const ys: number[] = [];
-    for (const r of d.records) {
-      if (!r.time || r.alt == null) continue;
-      xs.push(new Date(r.time).getTime() / 1000);
-      ys.push(r.alt);
-    }
-    if (xs.length > 1) {
-      plots.unshift({ title: 'Altitude vs time', xLabel: 'Time', yLabel: 'Altitude (m)', x: xs, y: ys, isTime: true });
-    }
-  }
   return plots;
 }
 
 function PlotCard({ title, xLabel, yLabel, x, y, isTime }: PlotSpec) {
-  const ref = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
   const data = useMemo(() => [x, y] as uPlot.AlignedData, [x, y]);
+
   useEffect(() => {
-    if (!ref.current) return;
-    const opts: uPlot.Options = {
-      title,
-      width: ref.current.clientWidth || 480,
-      height: 280,
-      scales: { x: { time: !!isTime } },
-      axes: [{ label: xLabel }, { label: yLabel }],
-      series: [
-        {},
-        { stroke: '#3b82f6', width: 1.5, points: { show: x.length < 400 } },
-      ],
-      cursor: { drag: { x: true, y: true, uni: 10 } },
-    };
-    const u = new uPlot(opts, data, ref.current);
-    const onResize = () => u.setSize({ width: ref.current!.clientWidth, height: 280 });
-    window.addEventListener('resize', onResize);
+    const host = hostRef.current;
+    if (!host || x.length < 2) return;
+    let u: uPlot | null = null;
+    let ro: ResizeObserver | null = null;
+
+    // Defer one frame so the host has its grid-cell width when uPlot mounts.
+    const raf = requestAnimationFrame(() => {
+      if (!hostRef.current) return;
+      const opts: uPlot.Options = {
+        title,
+        width: hostRef.current.clientWidth || 420,
+        height: 260,
+        scales: { x: { time: !!isTime } },
+        axes: [
+          { label: xLabel, stroke: '#94a3b8', grid: { stroke: '#1f2a44' } },
+          { label: yLabel, stroke: '#94a3b8', grid: { stroke: '#1f2a44' } },
+        ],
+        series: [
+          {},
+          {
+            label: yLabel,
+            stroke: '#60a5fa',
+            width: 1.6,
+            points: { show: x.length < 600, size: 3, fill: '#60a5fa' },
+          },
+        ],
+        cursor: { drag: { x: true, y: true } },
+      };
+      u = new uPlot(opts, data, hostRef.current);
+      ro = new ResizeObserver(() => {
+        if (!u || !hostRef.current) return;
+        u.setSize({ width: hostRef.current.clientWidth, height: 260 });
+      });
+      ro.observe(hostRef.current);
+    });
+
     return () => {
-      window.removeEventListener('resize', onResize);
-      u.destroy();
+      cancelAnimationFrame(raf);
+      ro?.disconnect();
+      u?.destroy();
     };
   }, [data, title, xLabel, yLabel, isTime, x.length]);
+
+  if (x.length < 2) {
+    return (
+      <div className="plot-card">
+        <h4 className="plot-title">{title}</h4>
+        <div className="muted small">Not enough data points</div>
+      </div>
+    );
+  }
+
   return (
     <div className="plot-card">
-      <div ref={ref} className="plot-host" />
+      <div ref={hostRef} className="plot-host" />
     </div>
   );
 }

@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import { v4 } from '../../lib/uuid';
 import type { Dataset, ParseResult } from '../types';
 import { GROUP_INFO } from '../types';
-import { parseCoord, fixWestLon } from '../normalise/coords';
+import { parseCoord, fixWestLon, dmsAsDecimalToDD, isInAmmssBox, AMMSS_LAT_RANGE } from '../normalise/coords';
 import { parseTime } from '../normalise/time';
 import { denullNumber } from '../normalise/sentinels';
 import { kToC, fToC, inferTemperatureUnit } from '../normalise/units';
@@ -130,6 +130,27 @@ export async function parseWalkWorkbook(file: File): Promise<ParseResult> {
     }
     if (flippedLonOnce) {
       warnings.push(`${file.name}#${sheetName}: West-longitude signs flipped`);
+    }
+
+    // Sheet-level sanity check: if the parsed latitudes are outside the AMMSS
+    // envelope, the cells may have been DMS-as-decimal (e.g. 54.37 meaning
+    // 54° 37'). Reinterpret all records' lat/lon and adopt the result if it
+    // moves the dataset back into Blencathra.
+    const meanLat = records.reduce((s, r) => s + r.lat, 0) / records.length;
+    if (meanLat < AMMSS_LAT_RANGE[0] || meanLat > AMMSS_LAT_RANGE[1]) {
+      const reinterpreted = records.map((r) => ({
+        ...r,
+        lat: dmsAsDecimalToDD(r.lat),
+        lon: dmsAsDecimalToDD(r.lon),
+      }));
+      const newMean = reinterpreted.reduce((s, r) => s + r.lat, 0) / reinterpreted.length;
+      if (newMean >= AMMSS_LAT_RANGE[0] && newMean <= AMMSS_LAT_RANGE[1]) {
+        records.splice(0, records.length, ...reinterpreted);
+        warnings.push(`${file.name}#${sheetName}: re-parsed coordinates as DMS-as-decimal (e.g. "54.37" → 54° 37')`);
+      } else {
+        const stray = records.filter((r) => !isInAmmssBox(r.lat, r.lon)).length;
+        warnings.push(`${file.name}#${sheetName}: ${stray}/${records.length} samples outside the Blencathra area — check coordinates`);
+      }
     }
 
     datasets.push({
