@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../data/store';
 import { parseFiles } from '../data/parsers';
 
@@ -6,22 +6,15 @@ export function Dropzone() {
   const addDatasets = useStore((s) => s.addDatasets);
   const addWarnings = useStore((s) => s.addWarnings);
   const datasets = useStore((s) => s.datasets);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
   const [over, setOver] = useState(false);
 
   const handle = useCallback(
     async (files: FileList | File[]) => {
       const arr = Array.from(files);
       if (!arr.length) return;
-      setBusy(true);
-      try {
-        const { datasets: parsed, warnings } = await parseFiles(arr);
-        if (parsed.length) addDatasets(parsed);
-        if (warnings.length) addWarnings('drop', warnings);
-      } finally {
-        setBusy(false);
-      }
+      const { datasets: parsed, warnings } = await parseFiles(arr);
+      if (parsed.length) addDatasets(parsed);
+      if (warnings.length) addWarnings('drop', warnings);
     },
     [addDatasets, addWarnings],
   );
@@ -31,7 +24,10 @@ export function Dropzone() {
       e.preventDefault();
       setOver(true);
     };
-    const onDragLeave = () => setOver(false);
+    const onDragLeave = (e: DragEvent) => {
+      // Only un-highlight when leaving the window
+      if ((e as any).relatedTarget == null) setOver(false);
+    };
     const onDrop = async (e: DragEvent) => {
       e.preventDefault();
       setOver(false);
@@ -40,7 +36,6 @@ export function Dropzone() {
       if (items) {
         for (const it of items) {
           if (it.kind === 'file') {
-            // Folder drop (browsers that support webkitGetAsEntry)
             const entry = (it as any).webkitGetAsEntry?.();
             if (entry && entry.isDirectory) {
               files.push(...(await walkDir(entry)));
@@ -73,22 +68,12 @@ export function Dropzone() {
         <div className="empty-state">
           <h1>NCAS-AMMS Visualiser</h1>
           <p>
-            Drop AMMSS data files anywhere on this page — UAV flight logs (<code>.h5</code> /{' '}
-            <code>UAV_data*.csv</code>), Windsond sondes (<code>.sounding.csv</code>,{' '}
-            <code>.raw_flight_history.csv</code>), sky-camera met (<code>*WxSensor.csv</code>),
-            Kestrels (<code>WEATHER - *.csv</code>), walk workbooks (
-            <code>NCAS_AMMSS_Blencathra_*.xlsx</code>), photos.
+            Drop AMMSS data files anywhere on this page, or click <strong>+ Add data</strong> in the sidebar. Supported:
+            UAV (<code>.h5</code> / <code>UAV_data*.csv</code>), Windsond (<code>.sounding.csv</code>,{' '}
+            <code>.raw_flight_history.csv</code>), sky-camera met (<code>*WxSensor.csv</code>), Kestrels (
+            <code>WEATHER - *.csv</code>), walk workbooks (<code>NCAS_AMMSS_Blencathra_*.xlsx</code>), photos with GPS
+            EXIF.
           </p>
-          <button onClick={() => inputRef.current?.click()} disabled={busy}>
-            {busy ? 'Parsing…' : 'Choose files'}
-          </button>
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            hidden
-            onChange={(e) => e.target.files && handle(e.target.files)}
-          />
         </div>
       )}
     </>
