@@ -11,10 +11,11 @@ interface AppState {
   selection: Selection | null;
   hover: Selection | null;
   warnings: { source: string; messages: string[] }[];
-  timeWindow: { start: string; end: string } | null;
+  timeWindow: { start: number; end: number } | null;
   expandedDatasetId: string | null;
   altitudeExaggeration: number;
   showAltitudeTowers: boolean;
+  compareSelected: string[];
   addDatasets: (datasets: Dataset[]) => void;
   removeDataset: (id: string) => void;
   updateDataset: (id: string, patch: Partial<Dataset>) => void;
@@ -24,6 +25,9 @@ interface AppState {
   expandDataset: (id: string | null) => void;
   setAltitudeExaggeration: (n: number) => void;
   setShowAltitudeTowers: (v: boolean) => void;
+  setTimeWindow: (w: { start: number; end: number } | null) => void;
+  toggleCompare: (id: string) => void;
+  clearCompare: () => void;
   clearAll: () => void;
 }
 
@@ -36,6 +40,7 @@ export const useStore = create<AppState>((set) => ({
   expandedDatasetId: null,
   altitudeExaggeration: 3,
   showAltitudeTowers: true,
+  compareSelected: [],
   addDatasets: (ds) =>
     set((s) => ({ datasets: [...s.datasets, ...ds] })),
   removeDataset: (id) =>
@@ -55,5 +60,13 @@ export const useStore = create<AppState>((set) => ({
   expandDataset: (id) => set({ expandedDatasetId: id }),
   setAltitudeExaggeration: (n) => set({ altitudeExaggeration: n }),
   setShowAltitudeTowers: (v) => set({ showAltitudeTowers: v }),
-  clearAll: () => set({ datasets: [], selection: null, hover: null, warnings: [], timeWindow: null, expandedDatasetId: null }),
+  setTimeWindow: (w) => set({ timeWindow: w }),
+  toggleCompare: (id) =>
+    set((s) => ({
+      compareSelected: s.compareSelected.includes(id)
+        ? s.compareSelected.filter((x) => x !== id)
+        : [...s.compareSelected, id],
+    })),
+  clearCompare: () => set({ compareSelected: [] }),
+  clearAll: () => set({ datasets: [], selection: null, hover: null, warnings: [], timeWindow: null, expandedDatasetId: null, compareSelected: [] }),
 }));

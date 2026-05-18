@@ -19,6 +19,8 @@ function categoryFor(d: Dataset): string {
   if (inst.startsWith('NCAS backpack')) return 'Backpack logger';
   if (inst.startsWith('KML') || inst.startsWith('GPX')) return 'GPS tracks';
   if (inst === 'Photo') return 'Photo';
+  if (inst === 'Document') return 'Documents';
+  if (inst.includes('calibration')) return 'Calibration';
   return 'Other';
 }
 
@@ -32,6 +34,8 @@ const CATEGORY_ORDER = [
   'Backpack logger',
   'GPS tracks',
   'Photo',
+  'Documents',
+  'Calibration',
   'Other',
 ];
 
@@ -47,6 +51,8 @@ export function Sidebar() {
   const setAltitudeExaggeration = useStore((s) => s.setAltitudeExaggeration);
   const showAltitudeTowers = useStore((s) => s.showAltitudeTowers);
   const setShowAltitudeTowers = useStore((s) => s.setShowAltitudeTowers);
+  const compareSelected = useStore((s) => s.compareSelected);
+  const toggleCompare = useStore((s) => s.toggleCompare);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const grouped = useMemo(() => {
@@ -162,10 +168,30 @@ export function Sidebar() {
                   <span>Show 3D altitude</span>
                 </label>
               )}
-              {d.kind !== 'photos' && (
+              {d.kind !== 'photos' && d.kind !== 'attachment' && (
                 <button className="plots-button" onClick={() => expandDataset(d.id)}>
                   View all plots →
                 </button>
+              )}
+              {(d.kind === 'track' || d.kind === 'profile' || d.kind === 'stations') && (
+                <label className="row small compare-toggle">
+                  <input
+                    type="checkbox"
+                    checked={compareSelected.includes(d.id)}
+                    onChange={() => toggleCompare(d.id)}
+                  />
+                  <span>Add to compare</span>
+                </label>
+              )}
+              {d.kind === 'attachment' && d.meta.attachmentUrl && (
+                <a
+                  className="plots-button"
+                  href={String(d.meta.attachmentUrl)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open ({String(d.meta.attachmentType ?? '').split('/').pop()})
+                </a>
               )}
             </div>
           ))}

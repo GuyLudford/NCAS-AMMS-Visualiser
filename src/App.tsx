@@ -5,6 +5,8 @@ import { Topbar } from './ui/Topbar';
 import { Dropzone } from './ui/Dropzone';
 import { DetailPanel } from './ui/DetailPanel';
 import { PlotsView } from './ui/PlotsView';
+import { TimeSlider } from './ui/TimeSlider';
+import { CompareTray } from './ui/CompareTray';
 import { useStore } from './data/store';
 
 export function App() {
@@ -16,10 +18,11 @@ export function App() {
       <div className="body">
         <Sidebar />
         <main>
-          {/* Map is kept mounted so the WebGL context isn't torn down when toggling plots. */}
           <div className="main-pane" style={{ display: expandedId ? 'none' : 'block' }}>
             <Map basemap={basemap} />
             <DetailPanel />
+            <CompareTray />
+            <TimeSlider />
           </div>
           {expandedId && <PlotsView />}
           <Dropzone />

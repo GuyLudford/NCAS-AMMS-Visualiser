@@ -31,6 +31,8 @@ export function Map({ basemap }: { basemap: string }) {
   const setSelection = useStore((s) => s.setSelection);
   const altitudeExaggeration = useStore((s) => s.altitudeExaggeration);
   const showAltitudeTowers = useStore((s) => s.showAltitudeTowers);
+  const timeWindow = useStore((s) => s.timeWindow);
+  const hoverPopupRef = useRef<maplibregl.Popup | null>(null);
 
   // Initialise once
   useEffect(() => {
@@ -128,16 +130,19 @@ export function Map({ basemap }: { basemap: string }) {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
-    syncDatasetLayers(map, datasets, (sel) => setSelection(sel), altitudeExaggeration, showAltitudeTowers);
+    if (!hoverPopupRef.current) {
+      hoverPopupRef.current = new maplibregl.Popup({ closeButton: false, closeOnClick: false, className: 'hover-popup' });
+    }
+    const hoverPopup = hoverPopupRef.current;
 
-    // Once terrain tiles stream in, re-sync so tower bases sit at the
-    // freshly known terrain elevation rather than the fallback.
-    const onIdle = () => syncDatasetLayers(map, datasets, (sel) => setSelection(sel), altitudeExaggeration, showAltitudeTowers);
+    syncDatasetLayers(map, datasets, (sel) => setSelection(sel), altitudeExaggeration, showAltitudeTowers, timeWindow, hoverPopup);
+
+    const onIdle = () => syncDatasetLayers(map, datasets, (sel) => setSelection(sel), altitudeExaggeration, showAltitudeTowers, timeWindow, hoverPopup);
     map.once('idle', onIdle);
     return () => {
       map.off('idle', onIdle);
     };
-  }, [datasets, ready, setSelection, altitudeExaggeration, showAltitudeTowers]);
+  }, [datasets, ready, setSelection, altitudeExaggeration, showAltitudeTowers, timeWindow]);
 
   // Fit-to-bounds on dataset count change
   useEffect(() => {
@@ -205,7 +210,16 @@ function syncDatasetLayers(
   onSelect: (sel: FeatureSel | null) => void,
   altExaggeration: number,
   showTowers: boolean,
+  timeWindow: { start: number; end: number } | null,
+  hoverPopup: maplibregl.Popup,
 ) {
+  const filterTime = timeWindow
+    ? ['all',
+        ['has', '__t'],
+        ['>=', ['get', '__t'], timeWindow.start],
+        ['<=', ['get', '__t'], timeWindow.end],
+      ] as any
+    : null;
   const wantedSrcIds = new Set<string>();
   const wantedLayerIds = new Set<string>();
   for (const d of datasets) {
@@ -236,6 +250,12 @@ function syncDatasetLayers(
 
     const ground = groundInfoFor(map, d);
     const { points: ptsFC, line, towers: towersFC } = datasetToGeoJSON(d, altExaggeration, ground);
+    // Pre-compute __t (epoch seconds) on each feature so the time filter
+    // can be a single MapLibre filter expression rather than rebuilding
+    // GeoJSON every slider tick.
+    const baseFilter = ['all', ['==', ['geometry-type'], 'Point']] as any;
+    const pointsTimeFilter = filterTime ? ['all', baseFilter, filterTime] : baseFilter;
+    const towersTimeFilter = filterTime ? ['all', filterTime] : null;
 
     const flatFC: GeoJSON.FeatureCollection = {
       type: 'FeatureCollection',
@@ -301,6 +321,7 @@ function syncDatasetLayers(
       } else {
         map.setPaintProperty(towersLayer, 'fill-extrusion-color', ['coalesce', ['get', '__color'], d.style.color]);
       }
+      map.setFilter(towersLayer, (towersTimeFilter ?? null) as any);
       map.setLayoutProperty(towersLayer, 'visibility', d.style.visible && d.style.show3D !== false ? 'visible' : 'none');
     } else {
       if (map.getLayer(towersLayer)) map.setLayoutProperty(towersLayer, 'visibility', 'none');
@@ -312,7 +333,7 @@ function syncDatasetLayers(
         id: ptsLayer,
         type: 'circle',
         source: srcId,
-        filter: ['==', ['geometry-type'], 'Point'],
+        filter: pointsTimeFilter as any,
         paint: {
           'circle-radius': d.kind === 'photos' ? 8 : 4,
           'circle-color': ['coalesce', ['get', '__color'], d.style.color],
@@ -329,11 +350,48 @@ function syncDatasetLayers(
       });
       map.on('mouseenter', ptsLayer, () => (map.getCanvas().style.cursor = 'pointer'));
       map.on('mouseleave', ptsLayer, () => (map.getCanvas().style.cursor = ''));
+      map.on('mousemove', ptsLayer, (e) => {
+        const f = e.features?.[0];
+        if (!f) {
+          hoverPopup.remove();
+          return;
+        }
+        const ri = (f.properties as any).__recordIndex as number;
+        const r = d.records[ri];
+        if (!r) return;
+        hoverPopup
+          .setLngLat([r.lon, r.lat])
+          .setHTML(renderHoverHtml(d, r))
+          .addTo(map);
+      });
+      map.on('mouseleave', ptsLayer, () => hoverPopup.remove());
     } else {
       map.setPaintProperty(ptsLayer, 'circle-opacity', d.style.opacity);
+      map.setFilter(ptsLayer, pointsTimeFilter as any);
     }
     map.setLayoutProperty(ptsLayer, 'visibility', d.style.visible ? 'visible' : 'none');
   }
+}
+
+function renderHoverHtml(d: Dataset, r: SampleRecord): string {
+  const rows: string[] = [];
+  rows.push(`<div class="hover-name">${escapeHtml(d.name)}</div>`);
+  if (r.time) rows.push(`<div class="hover-row"><span>time</span><b>${escapeHtml(r.time)}</b></div>`);
+  if (r.alt != null) rows.push(`<div class="hover-row"><span>alt</span><b>${r.alt.toFixed(0)} m</b></div>`);
+  const keys = ['air_temperature', 'relative_humidity', 'pressure', 'wind_speed', 'wind_direction', 'dew_point'];
+  for (const v of d.variables) {
+    if (rows.length > 8) break;
+    if (!keys.includes(v.key)) continue;
+    const val = r.values[v.key];
+    if (val == null) continue;
+    const display = typeof val === 'number' ? val.toFixed(2) : String(val);
+    rows.push(`<div class="hover-row"><span>${escapeHtml(v.label)}</span><b>${display} ${escapeHtml(v.unit)}</b></div>`);
+  }
+  return rows.join('');
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
 function datasetToGeoJSON(d: Dataset, altExaggeration: number, ground: DatasetGroundInfo) {
@@ -361,10 +419,11 @@ function datasetToGeoJSON(d: Dataset, altExaggeration: number, ground: DatasetGr
       const v = pickVal(r, colorBy);
       if (v != null && Number.isFinite(v)) color = ramp(normalise(v, min, max));
     }
+    const t = r.time ? Math.floor(new Date(r.time).getTime() / 1000) : null;
     pointFeatures.push({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [r.lon, r.lat] },
-      properties: { __recordIndex: i, __color: color },
+      properties: { __recordIndex: i, __color: color, __t: t },
     });
     lineCoords.push([r.lon, r.lat]);
   });
@@ -430,6 +489,7 @@ function buildTowers(
       const halfWidth = 20;
       const poly = squareAround(anchor.lon, anchor.lat, halfWidth);
       const color = colorBy && ramp ? ramp(normalise(pickVal(r, colorBy) ?? 0, vMin, vMax)) : undefined;
+      const t = r.time ? Math.floor(new Date(r.time).getTime() / 1000) : null;
       features.push({
         type: 'Feature',
         geometry: { type: 'Polygon', coordinates: [poly] },
@@ -438,6 +498,7 @@ function buildTowers(
           __color: color,
           __base: base,
           __height: height,
+          __t: t,
         },
       });
     }
@@ -452,6 +513,7 @@ function buildTowers(
       const halfWidth = Math.min(60, Math.max(12, Math.log10(climb + 10) * 8));
       const poly = squareAround(r.lon, r.lat, halfWidth);
       const color = colorBy && ramp ? ramp(normalise(pickVal(r, colorBy) ?? 0, vMin, vMax)) : undefined;
+      const t = r.time ? Math.floor(new Date(r.time).getTime() / 1000) : null;
       features.push({
         type: 'Feature',
         geometry: { type: 'Polygon', coordinates: [poly] },
@@ -460,6 +522,7 @@ function buildTowers(
           __color: color,
           __base: base,
           __height: height,
+          __t: t,
         },
       });
     }

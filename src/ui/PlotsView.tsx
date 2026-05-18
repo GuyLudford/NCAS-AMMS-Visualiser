@@ -148,15 +148,13 @@ function variableHasRange(values: number[]): boolean {
 
 function PlotCard({ title, xLabel, yLabel, x, y, isTime }: PlotSpec) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const uRef = useRef<uPlot | null>(null);
   const data = useMemo(() => [x, y] as uPlot.AlignedData, [x, y]);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host || x.length < 2) return;
-    let u: uPlot | null = null;
     let ro: ResizeObserver | null = null;
-
-    // Defer one frame so the host has its grid-cell width when uPlot mounts.
     const raf = requestAnimationFrame(() => {
       if (!hostRef.current) return;
       const opts: uPlot.Options = {
@@ -170,29 +168,33 @@ function PlotCard({ title, xLabel, yLabel, x, y, isTime }: PlotSpec) {
         ],
         series: [
           {},
-          {
-            label: yLabel,
-            stroke: '#60a5fa',
-            width: 1.6,
-            points: { show: x.length < 600, size: 3, fill: '#60a5fa' },
-          },
+          { label: yLabel, stroke: '#60a5fa', width: 1.6, points: { show: x.length < 600, size: 3, fill: '#60a5fa' } },
         ],
         cursor: { drag: { x: true, y: true } },
       };
-      u = new uPlot(opts, data, hostRef.current);
-      ro = new ResizeObserver(() => {
-        if (!u || !hostRef.current) return;
-        u.setSize({ width: hostRef.current.clientWidth, height: 260 });
-      });
+      const u = new uPlot(opts, data, hostRef.current);
+      uRef.current = u;
+      ro = new ResizeObserver(() => u.setSize({ width: hostRef.current!.clientWidth, height: 260 }));
       ro.observe(hostRef.current);
     });
-
     return () => {
       cancelAnimationFrame(raf);
       ro?.disconnect();
-      u?.destroy();
+      uRef.current?.destroy();
+      uRef.current = null;
     };
   }, [data, title, xLabel, yLabel, isTime, x.length]);
+
+  const downloadPng = () => {
+    const u = uRef.current;
+    if (!u) return;
+    // uPlot draws into one canvas; grab it and offer a download.
+    const canvas = u.ctx.canvas;
+    const link = document.createElement('a');
+    link.download = `${title.replace(/[^a-z0-9]+/gi, '_')}.png`;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
 
   if (x.length < 2) {
     return (
@@ -205,6 +207,7 @@ function PlotCard({ title, xLabel, yLabel, x, y, isTime }: PlotSpec) {
 
   return (
     <div className="plot-card">
+      <button className="png-button" onClick={downloadPng} title="Download as PNG">⤓ PNG</button>
       <div ref={hostRef} className="plot-host" />
     </div>
   );

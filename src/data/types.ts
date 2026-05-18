@@ -1,5 +1,7 @@
 export type DatasetKind = 'points' | 'track' | 'profile' | 'stations' | 'photos' | 'attachment';
 
+export const KINDS_WITHOUT_MAP_GEOMETRY: DatasetKind[] = ['attachment'];
+
 export const GROUP_CODES = ['CC', 'SL', 'MG', 'PN', 'GL'] as const;
 export type GroupCode = (typeof GROUP_CODES)[number];
 
