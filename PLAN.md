@@ -3,8 +3,9 @@
 A web-based, map-centric data visualiser for the **NCAS Atmospheric Measurement & Modelling Summer School** at FSC Blencathra (Cumbria, UK), inspired by Marble Aerospace's ARIA visualiser (`maps.marble.aero/aria/`).
 
 - **Stack**: React + Vite + TypeScript + MapLibre GL
-- **Ingestion**: Drag-and-drop in browser (no backend; files never leave the user's machine)
+- **Ingestion**: Drag-and-drop in browser (no backend; files never leave the user's machine). Whole-folder drops supported.
 - **Hosting**: Static site on GitHub Pages
+- **Plan status**: Updated 2026-05-18 after first-hand inspection of two zips (`uav_data.zip`, `4__Precipitation_NationHGITR.zip`) — all schemas in §3.2 are verified, not assumed.
 
 ---
 
@@ -87,50 +88,67 @@ It is a multi-sheet workbook of hand-collected meteorological measurements made 
 
 **Unit quirks**: Temperatures appear in **K, °C and °F** across sheets. Pressure in hPa. Time as `YYYY-MM-DD HH:MM`, `HH:MM`, or `YYYY-MM-DDTHH:mm`. Missing values: `-9999.9999`, blanks, `-`.
 
-### 3.2 The four expected subfolders and their data types
+### 3.2 What's actually in the data (verified from local zip 2026-05-18)
 
-Based on the timetable, the Drive folder almost certainly has (or will have) subfolders along these lines — most likely one folder per data stream, with a per-group subfolder inside each (G1–G5):
+The user-supplied zips reveal a much richer dataset, organised by **instrument stream**, not by group. Two main top-level trees:
 
 ```
-AMMSS 2026 students shared folder/
-├── Walk/                       ← already partly populated (the workbook)
-│   ├── G1 Curiously Cirrus/
-│   ├── G2 Silver Lining/
-│   ├── G3 Mountain Goats/
-│   ├── G4 Precipitation Nation/
-│   └── G5 Gail's/
-├── UAV/
-│   └── (per group)
-├── Sonde/
-│   └── (per group)
-├── Instrumentation/            ← student-built kit, fixed-station style
-│   └── (per group)
-└── Modelling/                  ← WRF outputs
+uav_data/
+├── uav_data/                    UAV flight logs (HDF5)
+│   ├── AMMSS_<GROUPCODE>_<YYYYMMDD>_<HHMMSSXX>_NN.h5
+│   └── plots/                   pre-rendered alt/map/time PDFs and PNGs
+├── windsonde_data/              Windsond radiosonde launches
+│   └── <YYYY-MM-DD-HHMM>/       one folder per launch
+├── skycamera_met/               fixed sky-camera met sensor
+│   └── <YYYYMMDD>-WxSensor.csv  one CSV per day (1-minute cadence, CF-1.8)
+├── kestrel_data/                handheld Kestrel 5500L weather meters
+│   ├── WEATHER - <SERIAL>_<DATETIME>.csv
+│   ├── cal.csv / cal.xlsx       inter-Kestrel calibration offsets
+│   └── IMG_*.jpg                deployment photos
+├── backpack_data/               student-built mobile loggers
+│   └── log_data_<colour>_<YYYY-MM-DD>.txt
+└── calibration_data/
+    ├── HOBO reference thermometer/   reference truth for calibration
+    └── Backpacks/                    backpack baseline logs
+
+precipitation_nation/
+├── 1- CC/                       per-group bundle: own walk + analysis
+├── 2 - Silver Linings/
+├── 3-Mountain Goats/
+├── 4 - Precipitation Nation-HGITR/   has its own test4.h5 UAV flight
+└── 5 - Gail's/                  group walk XLSX + own Kestrel timeseries
 ```
 
-**The subfolders are not visible to this session's Drive access** (only the top-level workbook is). To finalise the per-folder parser strategy we either need (a) the user to share the subfolders with the same account, (b) paste folder IDs / names here, or (c) accept that we'll build adapters generically and refine them when real data appears (which is the recommended path — see §16).
+Group codes embedded in UAV filenames: `GCC` = Curiously Cirrus, `GPN` = Precipitation Nation (others to confirm: GSL, GMG, GGL).
 
-#### Expected file shapes per stream, and how each is visualised
+#### Concrete schemas (all observed first-hand in the zips)
 
-| Stream | Per-group artefacts (expected) | Map representation | Detail-panel deep dive |
+| Stream | File pattern | Schema | Sample / quirks |
 |---|---|---|---|
-| **Walk** | One CSV/XLSX per group: timestamped lat/lon/alt + T, T-wet, T-dry, RH, P, wind reps, wind dir, cloud/oktas, notes (the existing workbook is the cross-group "ALL") | Coloured polyline along the path + sample markers; one colour per group | T/RH/P/wind vs time; **T vs altitude (lapse-rate plot)** — the canonical AMMSS visualisation; wind rose; route map |
-| **UAV** | CSV/JSON flight log (timestamped lat/lon/alt + roll/pitch/yaw + payload sensor traces); maybe GPX/KML | 3D polyline coloured by altitude or sensor variable; arrow markers at decimated points | Altitude/speed vs time; **sensor trace vs height** (profile-like); cross-section with map |
-| **Sonde** | CSV (one row per ascent sample) of time, P, T, RH, wind, height. Single launch site (the FSC) | Vertical 3D column at launch site, colour-graded by RH or T | T & dew-point vs height; wind barbs; **skew-T overlay against ECMWF/Met-O forecast if available** |
-| **Instrumentation** | Group-specific time-series from student-built rigs at fixed deployment sites; very heterogeneous schemas; CSV most likely | Pin at deployment site; click to open | Time-series for every variable the rig measured; comparison against AWS at same site |
-| **Modelling (WRF)** | NetCDF or pre-processed PNG/GeoTIFF of T/wind/cloud fields | Raster overlay with opacity + time slider | Hover to read gridded value; side-by-side with the observation that hits the same lat/lon/time |
+| **UAV flight** | `AMMSS_<G>_YYYYMMDD_HHMMSSXX_NN.h5` | HDF5. Group `<YYYYMMDD>_<HHMMSS>/columns/dataframe` is a compound dataset with fields `Roll, Pitch, Yaw, Lat, Lng, Alt, Spd, Press, Temp, RH, Time`. `Time` is Unix epoch seconds (float). ~150-560 rows per flight at ~1.5 s cadence | Decimal-degree coords, °C, hPa, m/s, m. Companion PDF/PNG plots already exist per flight in `plots/`. |
+| **UAV (CSV summary)** | `UAV_data1.csv` in a group folder | CSV: `Roll,Pitch,Yaw,Lat,Lng,Alt,Spd,Press,Temp,RH,Time` (ISO timestamp). Mirrors the HDF5 | Tidy, easy to parse first. |
+| **Windsonde profile** | `<datetime>.sounding.csv` | Header line: `# Radiation correction v2.4. Params: lat=…, lon=…, utc_time=…`. Columns: `Height (m AGL), Pressure (mb), Temperature (C), Relative humidity (%), Wind speed (m/s), Wind direction (true deg)` | Clean vertical profile, ready to plot directly. Launch lat/lon parsed from header. |
+| **Windsonde raw flight** | `<datetime>.raw_flight_history.csv` | `UTC time, Altitude (m MSL), Altitude (m AGL), Pressure (Pa), Speed, Heading, Temperature, RH, Internal T, Latitude, Longitude, Rise speed` | Gives the 3D balloon track. Lat/lon present only on some rows (GPS-tagged subsample). |
+| **Windsonde KML** | `<datetime>.kml` | Standard KML with `<wpt>`/track from Windsond | Easy 3D track render. |
+| **Windsonde SharpPy** | `<datetime>.sharppy.txt` | `%TITLE% … %RAW%` blocks with `PRES, HGHT, TEMP, DWPT, WDIR, WSPD`, `-9999` sentinels | Lets us drive a real **skew-T plot** in the detail panel. |
+| **Windsonde Windsond log** | `<datetime>.sounding` | Proprietary text packet log (`[#MET:te=…,hu=…,pa=…]`) | Use only as a fallback. |
+| **Sky-camera met (fixed station)** | `<YYYYMMDD>-WxSensor.csv` | CF-1.8 CSV, ~50 columns. Each variable has `<name>/value`, `/units`, `/quality_flag`, `/data_level`. Includes: air_temperature, relative_humidity, surface_air_pressure, internal_temperature, dew_point_temperature, wet_bulb_temperature, air_density, vapor_pressure, saturation_vapor_pressure, absolute_humidity, specific_humidity, mixing_ratio, heat_index, potential_temperature, virtual_temperature, enthalpy, humidex, **lifting_condensation_level_height** | 1-minute cadence (~1440 rows/day). Fixed station (no per-row lat/lon — one location at FSC). ISO-Z timestamps. |
+| **Kestrel handheld** | `WEATHER - <SERIAL>_<DATETIME>.csv` | Multi-line preamble (Name, Model, Serial, Firmware, Profile Version, Hardware, LiNK Version), then blank line, then header row: `Time, Temp, Wet Bulb Temp., Rel. Hum., Baro., Altitude, Station P., Wind Speed, Heat Index, Dew Point, Dens. Alt., Crosswind, Headwind, Mag. Dir., True Dir., Wind Chill` | Multiple serials (2434489, 2434495, 2457683, 2478072, 2478073, 2478075) — one per group's Kestrel. Wind direction is `***` when speed is 0. |
+| **Kestrel calibration** | `cal.csv` | `Reference` row from HOBO + per-serial offsets across T, Td, RH | Lets us apply per-Kestrel correction in the parser. |
+| **Backpack logger** | `log_data_<colour>_<YYYY-MM-DD>.txt` | Each line: `$GPGGA,…,$GPRMC,…,BAT,12.42V,PP,97662Pa,PP_T,14.4C,PP_Z,308.7m,SHT_RH,44%,SHT_T,15.6C`. Pseudo-NMEA followed by key-value pairs at 5-second cadence | Colours: red, orange, brown, blue (4 backpacks). GPS often has no fix (0 satellites) in indoor / pre-deployment lines — must be tolerant. |
+| **HOBO reference** | `<HOBO_SN> <date> BST.csv` | `Date-Time (BST), Temperature (°C), RH (%), Dew Point (°C)` + status columns | Single fixed reference logger — drives Kestrel calibration. BST not UTC — convert. |
+| **Per-group walk XLSX** | `NCAS_AMMSS_Blencathra_150526_<GROUP>.xlsx` | The multi-sheet messy hand-collected hill traverse from §3.1 — but now **one workbook per group** (e.g. `…_GAILS.xlsx`) rather than the unified `ALL` workbook | Re-use the messy-schema parser from §3.1 unchanged. |
+| **Group Kestrel time-series** | `Kestrel_Data 2.csv` (in Gail's folder) | Two `Time` columns prefix, then standard Kestrel header. `***` for unavailable wind dir | Long stationary deployment (Gail's recorded continuous). |
+| **Per-group analysis bundles** | various PNG/PDF/pptx | Pre-rendered route maps, alt plots, T-P-RH plots, wind plots, "kestrel vs WRF temps" comparison plots, summit photos, group presentations | Render as image overlays / a "documents" tab — don't try to re-create from raw. |
 
-**Other formats the tool should still handle generically** because anything could land in a folder during a teaching exercise: GPX hike tracks, KML, GeoJSON, EXIF-tagged photos, plain CSVs of (lat, lon, value).
+#### What the actual data tells us about scope
 
-### 3.3 Implementation priority forced by the calendar
-
-Today is **Mon 18 May (Day 8 = Experiment 2)**. Useful-by deadline = **Wed 20 May (Day 10 = Synthesis)**. So priority must be:
-
-1. **Walk data** (already collected, schema known, complex) — **do first**.
-2. **Sonde data** (vertical profiles plot well, simple schema) — **second**.
-3. **UAV** (3D track) — **third**.
-4. **Instrumentation** (heterogeneous, hardest, lowest novelty value) — handle generically.
-5. **Modelling/WRF** — defer beyond synthesis unless trivial.
+1. **WRF model output is *already being compared* against Kestrel data** (`kestrel-wrf_temps.png` exists in CC group). So WRF rasters or pre-extracted WRF traces *will* be valuable — they may arrive as PNG/CSV traces rather than NetCDF, which is a much easier path.
+2. **The sky camera is the closest thing to a base reference station** — high cadence, comprehensive variables, fixed location. It should be the always-on layer in the dashboard.
+3. **The sondes' SharpPy export is a gift** — we get a real skew-T plot almost for free with `SHARPpy` data parsed natively.
+4. **The UAV HDF5 is portable** — `h5wasm` runs HDF5 in the browser, so we can read the original `.h5` without conversion.
+5. **The backpack log format is unique to this kit** — parser needs to be written from scratch but is a one-line regex job.
+6. **Per-group folders are still uneven** (Silver Linings has only a photo, Mountain Goats only a pptx as of today). The tool should handle "this group has no data yet" gracefully.
 
 ---
 
@@ -196,14 +214,24 @@ NCAS-AMMS-Visualiser/
     │   ├── types.ts                      # Dataset, Record, Variable, Units
     │   ├── store.ts                      # Zustand store
     │   ├── parsers/
-    │   │   ├── index.ts                  # registry + format sniffer
-    │   │   ├── xlsx.ts                   # SheetJS multi-sheet AMMS workbook
-    │   │   ├── csv.ts                    # PapaParse
+    │   │   ├── index.ts                  # registry + filename-pattern sniffer
+    │   │   ├── walkWorkbook.ts           # per-group NCAS_AMMSS_*.xlsx
+    │   │   ├── uavHdf5.ts                # h5wasm: AMMSS_*.h5
+    │   │   ├── uavCsv.ts                 # UAV_data1.csv
+    │   │   ├── sondeSounding.ts          # *.sounding.csv (vertical profile)
+    │   │   ├── sondeFlight.ts            # *.raw_flight_history.csv (3D track)
+    │   │   ├── sharppy.ts                # *.sharppy.txt (skew-T)
+    │   │   ├── skycamMet.ts              # *WxSensor.csv (CF-1.8)
+    │   │   ├── kestrel.ts                # WEATHER - *.csv + Kestrel_Data*.csv
+    │   │   ├── kestrelCal.ts             # cal.csv / cal.xlsx
+    │   │   ├── hobo.ts                   # HOBO reference
+    │   │   ├── backpack.ts               # log_data_<colour>_*.txt
     │   │   ├── gpx.ts                    # toGeoJSON
     │   │   ├── kml.ts
     │   │   ├── geojson.ts
-    │   │   ├── photo.ts                  # exifr for JPG/HEIC GPS
-    │   │   └── netcdf.ts                 # netcdfjs (Phase 3)
+    │   │   ├── photo.ts                  # exifr
+    │   │   ├── attachment.ts             # PNG/PDF/PPTX as side-panel asset
+    │   │   └── netcdf.ts                 # netcdfjs (stretch)
     │   ├── normalise/
     │   │   ├── coords.ts                 # DMS/DD/NMEA → DD
     │   │   ├── time.ts                   # any → ISO UTC
@@ -279,27 +307,56 @@ The normaliser **always converts to**: decimal degrees, metres, °C, hPa, m/s, I
 
 ---
 
-## 7. Parsing pipeline (the hard part)
+## 7. Parsing pipeline (per stream)
 
-The AMMS workbook is the canonical "messy" input. The pipeline must handle it robustly:
+The format sniffer routes files by **name pattern first, extension second, content third** — the AMMS data has well-known filename conventions per instrument. Each parser produces one or more `Dataset` objects.
 
-1. **File sniff** — extension + magic bytes pick a parser (`xlsx`, `csv`, `gpx`, `geojson`, `kml`, `jpg`, `nc`).
-2. **For XLSX**: enumerate sheets. For each sheet:
-   1. Detect the **header row** by scanning for known column names (case/whitespace-insensitive, fuzzy match on aliases: `Lat`, `Latitude`, `Latitude (DD)`, etc.).
-   2. Below it, detect the **unit row** vs the first data row.
-   3. Map each column to a canonical `Variable.key` via an **alias table** (`Turkey Temperature` → `air_temperature_probe`, `Kestral Humidity`/`Kestrel Humidity` → `relative_humidity`, etc.).
-   4. Walk rows; for each non-empty row, normalise:
-      - Coordinates → DD via `parseCoord()` which tries: decimal, `D,M,S`, `D°M'S"`, NMEA `N/S/E/W ddmmsss`.
-      - West-longitude sign fix: if a sheet's longitudes are positive but the location is known-west, flip sign. Show a banner ("Lon signs flipped to West") to keep behaviour transparent.
-      - Temperatures: if a unit row says K or values are all in [250, 320], treat as K and convert to °C.
-      - Sentinels (`-9999*`, `-`, empty) → `null`.
-   5. Derive missing values where possible: RH from T+Tw (Magnus), dew point, average windspeed from replicates.
-3. **Classify the sheet**:
-   - All rows share one lat/lon and many timestamps → `stations` time-series.
-   - Rows have distinct lat/lon and timestamps in sequence → `track` with `points`.
-   - All rows share one lat/lon but vary with altitude → `profile` (radiosonde-like).
-4. **Yield one or more `Dataset` objects** to the store. The dropzone toast shows a summary: "Loaded 6 traverses (124 points), 3 stations from `NCAS_AMMSS_Blencathra_150526_ALL.xlsx`".
-5. **Parser problems are surfaced**, not silenced: a warnings tab lists per-sheet issues ("sheet 'Group 4' — no usable timestamps", "altitude column missing in rows 3, 7"). Useful for the students to fix their own data.
+### 7.1 Format sniffer
+
+```
+AMMSS_*.h5                       → uavHdf5Parser           (kind=track 3D, sensors)
+UAV_data1.csv / *UAV*.csv        → uavCsvParser            (kind=track 3D)
+*.sounding.csv                   → sondeSoundingParser     (kind=profile)
+*.raw_flight_history.csv         → sondeFlightParser       (kind=track, 3D balloon path)
+*.sharppy.txt                    → sharppyParser           (kind=profile, skew-T)
+windsonde.../*.kml               → kmlParser               (kind=track)
+*WxSensor.csv                    → skycamMetParser         (kind=stations, CF-1.8)
+WEATHER - *.csv                  → kestrelParser           (kind=stations)
+Kestrel_Data*.csv                → kestrelParser           (variant: no preamble)
+log_data_*.txt                   → backpackParser          (kind=track, sparse GPS)
+HOBO *.csv / *20177802*.csv      → hoboParser              (kind=stations, BST→UTC)
+NCAS_AMMSS_Blencathra_*.xlsx     → walkWorkbookParser      (kind=track per sheet)
+*.gpx / *.kml (generic)          → genericGpsParser
+*.jpg / *.heic / *.jpeg          → photoExifParser
+*.png / *.pdf / *.pptx           → documentAttachmentParser  (carry as a thumbnail asset)
+cal.csv / cal.xlsx               → kestrelCalibrationParser  (decorates other Kestrel datasets)
+```
+
+Files we cannot classify fall through to a **generic CSV** parser that prompts the user to map columns (time / lat / lon / alt / variables).
+
+### 7.2 Per-stream parser notes
+
+- **UAV HDF5 (`uavHdf5Parser`)** — open with `h5wasm` in a Web Worker. Discover the single top-level group (named `YYYYMMDD_HHMMSS`), read its `columns/dataframe` compound dataset, expand to a flat array of `SampleRecord`. Time is float Unix epoch — convert to ISO UTC. Extract group code from filename `AMMSS_<G>_…` and embed in `meta.group`.
+- **Sonde sounding (`sondeSoundingParser`)** — parse the `# Params: lat=…, lon=…, utc_time=…` header to get the launch site, then read CSV as a `profile` dataset where the single (lat, lon) is shared and altitude varies row-wise.
+- **Sonde raw flight (`sondeFlightParser`)** — sparse-GPS aware: forward-fill the last known fix so every row has a position (with a `lat_interpolated` flag).
+- **SharpPy (`sharppyParser`)** — line-based: read `%RAW%` block. Replace `-9999.00` with null. Combine with the sounding launch site (same datetime) to plot a skew-T.
+- **Skycam met (`skycamMetParser`)** — CF-1.8 style: split each header on `/` to recover `(variable, attribute)`. Pull `…/value` and `…/units` to build the variable list. Always a single fixed location — we need a config entry for the sky-camera site location (one-time constant: derive from the FSC Blencathra coords). Use this as the **anchor base station**.
+- **Kestrel (`kestrelParser`)** — skip preamble lines until a row begins with `Time,`. Embed the serial number (from preamble) in `meta.instrument_serial`. Optional: apply `cal.csv` offsets when the calibration dataset is also loaded.
+- **Backpack (`backpackParser`)** — regex per line: capture GPGGA time, GPRMC lat/lon (when fix valid), and the key-value tail. Mark fixes invalid when `GPGGA, …, ,0,00,` (no satellites). Output a `track` if any valid fixes, else `stations` at the rig's known site.
+- **HOBO (`hoboParser`)** — strip BOM, parse the `Date-Time (BST)` column, convert BST → UTC (+0 in winter, -1 in BST).
+- **Walk workbook (`walkWorkbookParser`)** — exactly the multi-sheet, multi-schema, alias-driven parser from the earlier plan. Now expected per-group (`…_CC.xlsx`, `…_GAILS.xlsx`, etc.) — the alias dictionary and coordinate normaliser cover all observed variants.
+- **Photo EXIF (`photoExifParser`)** — `exifr` for GPS + DateTime; if both present render as photo pin, else attach to the parent dataset's metadata if dropped together.
+- **Document attachments** — `.png/.pdf/.pptx` aren't georeferenced data, but they're meaningful artefacts. Park them in a per-group "Documents" tab in the side panel rather than the map.
+
+### 7.3 Normalisation invariants
+
+The dataset store always carries **decimal degrees (+N, +E), metres MSL, °C, hPa, m/s, ISO-8601 UTC**. Conversions happen at parse time, never at render time. Quirks already encountered:
+
+- **Time zones**: Skycam = UTC. HOBO = BST. Kestrel = local (often BST). Sonde = UTC. Backpack GPGGA = UTC. The parser tags each dataset's source TZ in `meta.source_tz` and converts.
+- **Wind direction sentinels**: Kestrel uses `***` when speed is 0 → null.
+- **Sonde sentinels**: `-9999`.
+- **Backpack no-fix lines**: lat/lon empty in GPGGA — drop the position, keep the rest.
+- **Walk workbook quirks**: K/°C/°F, signed/unsigned longitudes, DMS triplets, etc. (full list in §3.1).
 
 ---
 
@@ -350,18 +407,23 @@ Opens when a feature is selected; can be widened to half-screen.
 
 ---
 
-## 10. Deep-dive visualisations (per data type)
+## 10. Deep-dive visualisations (per actual data type)
 
-| Data type | Map representation | Detail panel plots |
+| Stream | Map representation | Detail panel plots |
 |---|---|---|
-| Hill traverse (Schema A–D) | Coloured polyline + sample markers | T/RH/P/wind vs time; T vs altitude (lapse rate); wind rose; map of just this group |
-| Fixed AWS / "Kestrel AWS" station | Pin with rings | T/RH/P/wind time-series; daily summary |
-| Radiosonde profile | Vertical column with colour gradient | T & dew-point vs height; wind barbs; skew-T (Phase 3) |
-| Drone/UAV | 3D extruded polyline | Altitude/speed vs time; payload sensor traces |
-| Lidar/ceilometer | Pin at site | Time-height contour of backscatter / cloud base |
-| Aerosol OPC/SMPS | Pin | Size-distribution plot, mean conc time-series |
-| Photo | Camera icon | Full-size viewer + EXIF + nearest met sample |
-| Synoptic/satellite raster | Overlay | Opacity slider; toggle |
+| **Walk (per-group XLSX)** | One coloured polyline per group + sample markers | T/RH/P/wind vs time; **T vs altitude (lapse rate)**; wind rose; route map |
+| **UAV flight (HDF5)** | 3D polyline coloured by altitude/T/RH; arrow markers at decimated samples; drone icon at last sample | Altitude/speed/Roll/Pitch/Yaw vs time; **T & RH vs altitude** (treat the climb as a profile); 3D scrubber along the path |
+| **UAV CSV summary** | Same as HDF5 but flagged "from CSV" | Same |
+| **Windsond sonde profile** | Vertical extruded column at launch site, gradient = RH | T & dew-point vs height; wind barbs; **skew-T** via SharpPy data; wind speed vs height |
+| **Windsond raw flight track** | 3D balloon trajectory polyline | Rise speed vs time; lat/lon vs altitude; together-with-profile button |
+| **Sky-camera met (fixed)** | Anchor pin at FSC; always visible | Multi-variable time-series with synchronised cursor; LCL height inset; daily mean / range |
+| **Kestrel handheld** | Pin per serial (deployment site); halo shows "now-active" if time slider intersects | T / Tw / RH / P / wind speed time-series; wind-rose; calibration offset shown in caption |
+| **HOBO reference** | Pin at indoor cal location | Reference T/RH time-series with calibration window highlighted |
+| **Backpack logger** | Track polyline (where GPS valid) + pin (when stationary). Colour = SHT_T or PP | Pressure vs time, derived altitude vs time, T vs time, RH vs time |
+| **Walk → UAV → Sonde co-plot** | All three on map together | Combined **T-vs-altitude** chart on a single axis — the headline synthesis plot |
+| **WRF model trace** (if delivered as CSV) | Optional pin at extracted site | WRF T overlaid on Kestrel T (the `kestrel-wrf_temps.png` style) |
+| **Photo** | Camera icon | Full-size viewer + EXIF + nearest met sample |
+| **Document (PNG / PDF / PPTX)** | Not on map | Side-panel "Documents" tab per group |
 
 ---
 
@@ -376,41 +438,50 @@ The app loads these by default when there's no IndexedDB state, behind a "Load d
 
 ---
 
-## 12. Phased roadmap (calendar-aware)
+## 12. Phased roadmap (calendar-aware, post-data-inspection)
 
-Synthesis day is **Wed 20 May**, presentations **Thu 21 May**. We have ~48 hours of usable build time before synthesis, so the roadmap is collapsed:
+Synthesis day is **Wed 20 May**, presentations **Thu 21 May**. Order is set by *value per hour of work* given the data we now actually have.
 
 ### Phase 0 — Bootstrap (a few hours, Mon 18 May evening)
 - Vite + React + TS project, MapLibre, ESLint/Prettier.
-- GH Actions workflow that builds and deploys `dist/` to `gh-pages`.
+- GH Actions workflow → `gh-pages`.
 - Empty map centred on Blencathra deploys cleanly.
-- IndexedDB persistence wired up.
+- IndexedDB persistence; folder-drop ingestion (accept a whole directory drag, walk it, dispatch each file to the right parser).
+- "Three quick-load buttons" on the empty state: **Walk only / UAV only / Everything** loads pre-bundled demo data so the page is useful immediately.
 
-### Phase 1 — Walk data end-to-end (Tue 19 May morning)
-- Parsers: XLSX (multi-sheet alias-driven) + CSV + GeoJSON + GPX.
-- Coordinate / unit / sentinel normalisation, alias dictionary built from the real workbook.
-- Map: point + track layers; click → feature detail; layer list with toggle/opacity/colour-by.
-- Detail panel with **T-vs-altitude lapse-rate plot** (uPlot) — the highest-value single chart.
-- **Demo gate**: drop the workbook → see all five groups' traverses, click any waypoint, read its values, view the lapse-rate plot.
+### Phase 1 — UAV + Sonde + Skycam (Tue 19 May morning)
+These are the **three highest-value, lowest-mess** streams (clean schemas, real 3D, clear story):
+- `uavCsvParser` + `uavHdf5Parser` (h5wasm) → 3D coloured tracks on a 3D-terrain map.
+- `sondeSoundingParser` + `sondeFlightParser` + `sharppyParser` → vertical column + 3D balloon track + skew-T plot.
+- `skycamMetParser` → fixed anchor pin with time-series.
+- Detail panel with uPlot: time-series for UAV; T/Td/RH/wind vs height for sonde; multi-variable time-series for skycam.
+- Time slider wired to all three.
+- **Demo gate**: drop the `uav_data/` folder → 3 UAV flights as 3D tracks coloured by altitude, 4 sonde launches as vertical columns + skew-T, the sky camera as a fixed station — all on one map with a working time slider.
 
-### Phase 2 — Sonde + comparisons (Tue 19 May afternoon)
-- Sonde CSV parser + vertical-column map representation + profile plot (T, Td, RH, wind vs height).
-- Compare tray: stack multiple walks or sondes on shared axes.
-- Time slider scoped to currently-visible datasets.
+### Phase 2 — Walks + Kestrels + HOBO + the headline synthesis plot (Tue 19 May afternoon)
+- `walkWorkbookParser` (the messy per-group XLSX, reusing the alias dictionary).
+- `kestrelParser` + `hoboParser` + `kestrelCalibrationParser`.
+- Compare tray with the **co-plot of walk + UAV + sonde T-vs-altitude** on one axis — this is *the* synthesis figure.
+- Per-group colour scheme propagated through every dataset (filename → group code → colour).
 
-### Phase 3 — UAV (Wed 20 May morning)
-- UAV CSV/GPX/JSON parser; 3D-extruded track (altitude as Z).
-- Payload-sensor plots in detail panel.
-- 3D terrain enabled by then for context.
+### Phase 3 — Backpacks + photos + polish (Wed 20 May morning)
+- `backpackParser` for the four colours; render as tracks where GPS valid.
+- `photoExifParser` → camera pins; click to view full size in side panel.
+- Per-group sidebar tabs (Walk / UAV / Sonde / Documents).
+- "Generic CSV" fallback with column mapping UI.
+- Empty state, supported-formats drawer, parser-warnings panel.
 
-### Phase 4 — Generic / instrumentation / polish (Wed 20 May afternoon)
-- "Generic CSV" path: prompt the user to map columns to lat/lon/time/alt if auto-detection fails.
-- Photo + EXIF layer.
-- Empty-state, supported-formats help drawer, parser warnings panel.
-- Share-link + screenshot button for use in slides.
+### Phase 4 — Synthesis polish (Wed 20 May afternoon)
+- Share-link copies the current view + selection + time window.
+- Export-PNG on every plot (for slide deck).
+- Sample/demo data bundle published alongside (sanitised if needed).
+- A read-only public deploy URL the students can paste into their presentations.
 
-### Phase 5 — Stretch goals (Thu 21 May or post-course)
-- WRF/raster overlays, NetCDF, skew-T proper, value-at-cursor on rasters, side-by-side compare-with-model.
+### Phase 5 — Stretch (Thu 21 May or post-course)
+- WRF raster overlays (PNG slices preferred over NetCDF).
+- Skew-T improvements: dry adiabats, moist adiabats, mixing ratio lines.
+- Per-launch comparison view for sondes across different days.
+- Backpack derived-altitude calibration against sonde profile.
 
 ---
 
@@ -422,38 +493,50 @@ Synthesis day is **Wed 20 May**, presentations **Thu 21 May**. We have ~48 hours
 | State | `zustand` |
 | XLSX | `xlsx` (SheetJS, community edition) |
 | CSV | `papaparse` |
+| **HDF5 (UAV `.h5`)** | **`h5wasm`** — runs HDF5 in WebAssembly inside the browser |
 | GPX/KML | `@tmcw/togeojson` |
 | EXIF | `exifr` |
+| **Skew-T** | `d3` + custom plot (no off-the-shelf JS lib for skew-T) |
 | Plots | `uplot` (fast, tiny) + `plotly.js-basic-dist` for the few cases that need it |
-| NetCDF | `netcdfjs` (Phase 3) |
+| **Timezone** | `luxon` (BST↔UTC for HOBO/Kestrel) |
+| NetCDF | `netcdfjs` (only if WRF NetCDF lands; PNG slices preferred) |
 | Colour ramps | `d3-scale-chromatic` |
 | Worker offload | `comlink` |
 
-All MIT/BSD/Apache-licensed; bundle stays under ~1.5 MB gzipped without Plotly, ~3 MB with.
+All MIT/BSD/Apache-licensed. Bundle stays under ~1.5 MB gzipped without Plotly, ~3 MB with it. `h5wasm` adds ~500 KB but is loaded on-demand only when an `.h5` file is dropped.
 
 ---
 
-## 14. Risks / open questions
+## 14. Risks / open questions (revised after seeing real data)
 
-1. **Subfolder access** — this session can only see `NCAS_AMMSS_Blencathra_150526_ALL` inside the shared folder, not the per-stream subfolders the user mentioned. Need either re-share of the subfolders to the same Drive account, or pasted folder IDs / a manual file dump. Without this we plan adapters on inference and refine when real files appear.
-2. **Privacy of committing the real workbook** to a public repo for use as the demo. The data is student work; default to **not** committing it and instead ship synthetic demo data, then load the real workbook via drag-drop.
-3. **Schema drift between groups** — the alias dictionary needs ongoing maintenance. The warning panel surfaces divergences so nothing is silently dropped.
-4. **Heterogeneous coordinate sign conventions** — some sheets store West longitude as positive. The parser flips signs based on known location and shows a banner so the assumption is visible.
-5. **Time zone ambiguity** — some sheets are UTC, some bare `HH:MM`. Default to UTC, warn when ambiguous.
-6. **WRF NetCDF in-browser** is heavy. Deferred to stretch goals; if students need WRF overlays for synthesis, simplest path is to pre-render PNG slices server-side or by the modelling team and drop those.
-7. **Tile usage limits** — stick to free OSM-based providers; allow the user to supply their own Mapbox/Maptiler token via the top-bar input for nicer tiles.
-8. **Mobile use during the walk** — out of scope for v1; the visualiser is for post-collection analysis on a laptop, not in-field capture.
+1. **Privacy of bundling real student data** in the public repo — recommend keeping the GitHub Pages site purely drag-and-drop and not committing the real zips. Anything bundled should be sanitised or synthetic.
+2. **HDF5 in-browser bundle size** — `h5wasm` is ~500 KB; load it lazily only when an `.h5` is dropped to keep first-paint fast.
+3. **Time-zone handling** — Skycam UTC, Sonde UTC, HOBO BST, Kestrel local. Critical to surface the inferred TZ on each dataset so the time slider lines them up correctly.
+4. **Sky-camera site location** is needed but not in the CSV — hard-code (with override) from the FSC's known position. Confirm with the user before shipping.
+5. **Sparse per-group data** (Silver Linings has only one photo, Mountain Goats only a pptx) — UI must gracefully show "no walk data yet" rather than rendering an empty layer.
+6. **WRF outputs** haven't actually arrived as files yet — only as a pre-rendered comparison PNG. If WRF traces become available as CSV, easy. If as NetCDF, drop into stretch.
+7. **Schema drift in walk workbooks** — alias dictionary needs to handle every typo variant (`Kestrel`, `Kestral`, `Turkey Temperature`, etc.). Warning panel surfaces unmatched columns.
+8. **Coordinate sign convention** in walk sheets (West-positive in some, signed in others) — covered by the existing normaliser plus a "signs flipped to West" banner.
+9. **Tile usage limits** — stick to free OSM-based providers; top-bar allows user-supplied Mapbox/Maptiler token.
+10. **Mobile use during the walk** — out of scope for v1; this is a post-collection analysis tool.
+11. **Pre-rendered plots** in per-group folders (PNG/PDF) — surface them as a "Documents" tab rather than try to reproduce them. Saves engineering effort while still respecting work the students have already done.
 
 ---
 
-## 15. Definition of done (Phase 1 demo)
+## 15. Definition of done (post-data-inspection)
 
-A user visits the deployed GitHub Pages URL, drags `NCAS_AMMSS_Blencathra_150526_ALL.xlsx` onto the page, and sees:
+### Phase 1 demo (Tue 19 May)
+A user opens the deployed URL, drags the `uav_data/` folder onto it, and sees:
+- The 3D map (terrain on) zoomed to Blencathra.
+- UAV flights as 3D polylines, coloured by altitude; arrowheads showing direction.
+- Each sonde launch as a vertical column with a colour-graded RH gradient; click → skew-T in the side panel.
+- A fixed sky-camera pin with a live multi-variable time-series.
+- A bottom time slider that scrubs the whole scene; only datasets within the time window render.
+- A left-hand layer list that toggles each instrument on/off.
 
-- The map zoomed to Blencathra with one coloured polyline per student group.
-- A sidebar listing every group with toggles.
-- Clicking any waypoint opens a detail panel with its T/RH/P/wind values and group context.
-- Toggling colour-by-altitude recolours every track.
-- A shareable URL preserves the view and selection.
-
-Anything beyond that is Phase 2+.
+### Synthesis-day deliverable (Wed 20 May)
+On the same page, also drag in the `precipitation_nation/` folder and the Kestrel CSVs to get:
+- Per-group walk polylines.
+- Kestrel pins along the route.
+- A **single combined "T vs altitude" plot** in the compare tray showing every group's walk, the UAV climb, and the sonde profile from the same day — the headline AMMSS synthesis figure, exportable as PNG.
+- A shareable URL that any group can paste into their presentation.
