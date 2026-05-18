@@ -4,6 +4,10 @@ import { GROUP_INFO } from '../data/types';
 import type { Dataset } from '../data/types';
 import { parseFiles } from '../data/parsers';
 
+function hasAltitude(d: Dataset): boolean {
+  return d.records.some((r) => r.alt != null && Number.isFinite(r.alt));
+}
+
 function categoryFor(d: Dataset): string {
   const inst = String(d.meta.instrument ?? '');
   if (inst.startsWith('UAV')) return 'UAV';
@@ -147,6 +151,16 @@ export function Sidebar() {
                     ))}
                   </select>
                 </div>
+              )}
+              {hasAltitude(d) && (
+                <label className="row small">
+                  <input
+                    type="checkbox"
+                    checked={d.style.show3D !== false}
+                    onChange={(e) => updateDataset(d.id, { style: { ...d.style, show3D: e.target.checked } })}
+                  />
+                  <span>Show 3D altitude</span>
+                </label>
               )}
               {d.kind !== 'photos' && (
                 <button className="plots-button" onClick={() => expandDataset(d.id)}>

@@ -32,6 +32,7 @@ export interface DatasetStyle {
   colorBy?: string;
   visible: boolean;
   opacity: number;
+  show3D?: boolean; // per-dataset 3D tower toggle; defaults to true
 }
 
 export interface Dataset {

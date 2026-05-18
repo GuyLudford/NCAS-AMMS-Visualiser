@@ -50,12 +50,27 @@ interface PlotSpec {
   isTime?: boolean;
 }
 
+// Variables whose value isn't physically a function of altitude — we keep
+// their time-series but skip the "vs Altitude" plot to avoid noise.
+const NON_ATMOSPHERIC_KEYS = new Set([
+  'roll',
+  'pitch',
+  'yaw',
+  'heading',
+  'speed',
+  'wind_direction',
+  'battery',
+  'internal_temperature',
+  'pp_temperature',
+  'true_dir',
+  'density_alt',
+]);
+
 function buildPlots(d: Dataset): PlotSpec[] {
   const plots: PlotSpec[] = [];
   const hasAlt = d.records.some((r) => r.alt != null && Number.isFinite(r.alt));
   const hasTime = d.records.some((r) => !!r.time);
 
-  // Altitude vs time first if both present
   if (hasAlt && hasTime) {
     const xs: number[] = [];
     const ys: number[] = [];
@@ -70,8 +85,10 @@ function buildPlots(d: Dataset): PlotSpec[] {
   }
 
   for (const v of d.variables) {
-    // For tracks and profiles: variable vs altitude (sort by altitude for cleaner lines)
-    if (hasAlt && (d.kind === 'track' || d.kind === 'profile')) {
+    // Variable vs altitude — only meaningful for atmospheric quantities.
+    const altitudeMeaningful =
+      hasAlt && (d.kind === 'track' || d.kind === 'profile') && !NON_ATMOSPHERIC_KEYS.has(v.key);
+    if (altitudeMeaningful) {
       const pairs: [number, number][] = [];
       for (const r of d.records) {
         const val = pickN(r, v.key);
@@ -79,7 +96,7 @@ function buildPlots(d: Dataset): PlotSpec[] {
           pairs.push([val, r.alt]);
         }
       }
-      if (pairs.length > 1) {
+      if (pairs.length > 1 && variableHasRange(pairs.map((p) => p[0]))) {
         pairs.sort((a, b) => a[1] - b[1]);
         plots.push({
           title: `${v.label} vs Altitude`,
@@ -90,7 +107,6 @@ function buildPlots(d: Dataset): PlotSpec[] {
         });
       }
     }
-    // Time-series
     if (hasTime) {
       const xs: number[] = [];
       const ys: number[] = [];
@@ -102,7 +118,7 @@ function buildPlots(d: Dataset): PlotSpec[] {
           ys.push(val);
         }
       }
-      if (xs.length > 1) {
+      if (xs.length > 1 && variableHasRange(ys)) {
         plots.push({
           title: `${v.label} vs time`,
           xLabel: 'Time',
@@ -115,6 +131,19 @@ function buildPlots(d: Dataset): PlotSpec[] {
     }
   }
   return plots;
+}
+
+// Skip plots where the variable doesn't change — they're flat lines that
+// tell the user nothing.
+function variableHasRange(values: number[]): boolean {
+  if (values.length < 2) return false;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return max - min > 1e-3;
 }
 
 function PlotCard({ title, xLabel, yLabel, x, y, isTime }: PlotSpec) {

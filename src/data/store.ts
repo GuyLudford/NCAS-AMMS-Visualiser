@@ -34,7 +34,7 @@ export const useStore = create<AppState>((set) => ({
   warnings: [],
   timeWindow: null,
   expandedDatasetId: null,
-  altitudeExaggeration: 5,
+  altitudeExaggeration: 3,
   showAltitudeTowers: true,
   addDatasets: (ds) =>
     set((s) => ({ datasets: [...s.datasets, ...ds] })),

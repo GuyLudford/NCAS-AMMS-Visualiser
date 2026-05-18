@@ -214,7 +214,6 @@ function syncDatasetLayers(
     wantedLayerIds.add(`ds-${d.id}-pts`);
     wantedLayerIds.add(`ds-${d.id}-line`);
     wantedLayerIds.add(`ds-${d.id}-towers`);
-    wantedLayerIds.add(`ds-${d.id}-towercaps`);
   }
   const style = map.getStyle();
   for (const layer of style?.layers ?? []) {
@@ -234,7 +233,6 @@ function syncDatasetLayers(
     const ptsLayer = `ds-${d.id}-pts`;
     const lineLayer = `ds-${d.id}-line`;
     const towersLayer = `ds-${d.id}-towers`;
-    const capsLayer = `ds-${d.id}-towercaps`;
 
     const ground = groundInfoFor(map, d);
     const { points: ptsFC, line, towers: towersFC } = datasetToGeoJSON(d, altExaggeration, ground);
@@ -303,26 +301,9 @@ function syncDatasetLayers(
       } else {
         map.setPaintProperty(towersLayer, 'fill-extrusion-color', ['coalesce', ['get', '__color'], d.style.color]);
       }
-      map.setLayoutProperty(towersLayer, 'visibility', d.style.visible ? 'visible' : 'none');
-
-      // Cap on top so the apex is visible at distance.
-      if (!map.getLayer(capsLayer)) {
-        map.addLayer({
-          id: capsLayer,
-          type: 'fill-extrusion',
-          source: towersSrcId,
-          paint: {
-            'fill-extrusion-color': ['coalesce', ['get', '__color'], d.style.color],
-            'fill-extrusion-base': ['max', ['get', '__base'], ['-', ['get', '__height'], 8]],
-            'fill-extrusion-height': ['get', '__height'],
-            'fill-extrusion-opacity': 1,
-          },
-        });
-      }
-      map.setLayoutProperty(capsLayer, 'visibility', d.style.visible ? 'visible' : 'none');
+      map.setLayoutProperty(towersLayer, 'visibility', d.style.visible && d.style.show3D !== false ? 'visible' : 'none');
     } else {
       if (map.getLayer(towersLayer)) map.setLayoutProperty(towersLayer, 'visibility', 'none');
-      if (map.getLayer(capsLayer)) map.setLayoutProperty(capsLayer, 'visibility', 'none');
     }
 
     // Ground points (always)
@@ -371,7 +352,6 @@ function datasetToGeoJSON(d: Dataset, altExaggeration: number, ground: DatasetGr
   const ramp = colorBy ? rampForVariable(colorBy) : null;
 
   const pointFeatures: GeoJSON.Feature[] = [];
-  const towerFeatures: GeoJSON.Feature[] = [];
   const lineCoords: [number, number][] = [];
 
   d.records.forEach((r, i) => {
@@ -387,30 +367,9 @@ function datasetToGeoJSON(d: Dataset, altExaggeration: number, ground: DatasetGr
       properties: { __recordIndex: i, __color: color },
     });
     lineCoords.push([r.lon, r.lat]);
-
-    if (r.alt != null && Number.isFinite(r.alt)) {
-      // Climb above the dataset's lowest sample, mapped above the local
-      // terrain so towers always sit on the ground regardless of whether
-      // the source reports MSL or AGL.
-      const climb = Math.max(0, r.alt - ground.minAlt);
-      const base = ground.groundElev;
-      const height = base + climb * altExaggeration;
-      if (height - base > 0.5) {
-        const halfWidth = Math.min(60, Math.max(8, Math.log10(height - base + 10) * 8));
-        const poly = squareAround(r.lon, r.lat, halfWidth);
-        towerFeatures.push({
-          type: 'Feature',
-          geometry: { type: 'Polygon', coordinates: [poly] },
-          properties: {
-            __recordIndex: i,
-            __color: color,
-            __base: base,
-            __height: height,
-          },
-        });
-      }
-    }
   });
+
+  const towerFeatures = buildTowers(d, ramp, min, max, ground, altExaggeration);
 
   // Line: only emit for genuine tracks (kind='track') where lat/lon vary.
   let line: GeoJSON.Feature | null = null;
@@ -429,6 +388,107 @@ function datasetToGeoJSON(d: Dataset, altExaggeration: number, ground: DatasetGr
     line,
     towers: { type: 'FeatureCollection' as const, features: towerFeatures },
   };
+}
+
+const MAX_TOWERS = 100;
+
+// Build per-sample 3D extrusion features. Two strategies depending on whether
+// the dataset is essentially a vertical profile at one location or a
+// horizontally-extended track.
+function buildTowers(
+  d: Dataset,
+  ramp: ((t: number) => string) | null,
+  vMin: number,
+  vMax: number,
+  ground: DatasetGroundInfo,
+  altExaggeration: number,
+): GeoJSON.Feature[] {
+  const colorBy = d.style.colorBy;
+  // Index records that have a real altitude and a position.
+  const indexed = d.records
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => Number.isFinite(r.lat) && Number.isFinite(r.lon) && r.alt != null && Number.isFinite(r.alt));
+  if (!indexed.length) return [];
+
+  const fixedPos = isFixedPosition(indexed.map((x) => x.r));
+  const thinned = thinTo(indexed, MAX_TOWERS);
+  const features: GeoJSON.Feature[] = [];
+
+  if (fixedPos) {
+    // STACKED segments: each tower starts where the previous one ended so the
+    // column shows the full climb as a continuous gradient of coloured slices.
+    const anchor = thinned[0].r;
+    const sorted = [...thinned].sort((a, b) => (a.r.alt! - b.r.alt!));
+    for (let k = 0; k < sorted.length; k++) {
+      const { r, i } = sorted[k];
+      const prevAlt = k === 0 ? ground.minAlt : sorted[k - 1].r.alt!;
+      const segLowClimb = Math.max(0, prevAlt - ground.minAlt);
+      const segHighClimb = Math.max(0, r.alt! - ground.minAlt);
+      if (segHighClimb <= segLowClimb) continue;
+      const base = ground.groundElev + segLowClimb * altExaggeration;
+      const height = ground.groundElev + segHighClimb * altExaggeration;
+      const halfWidth = 20;
+      const poly = squareAround(anchor.lon, anchor.lat, halfWidth);
+      const color = colorBy && ramp ? ramp(normalise(pickVal(r, colorBy) ?? 0, vMin, vMax)) : undefined;
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [poly] },
+        properties: {
+          __recordIndex: i,
+          __color: color,
+          __base: base,
+          __height: height,
+        },
+      });
+    }
+  } else {
+    // Variable-position track: one tower per (thinned) sample, each from
+    // local ground to the sample's altitude.
+    for (const { r, i } of thinned) {
+      const climb = Math.max(0, r.alt! - ground.minAlt);
+      if (climb < 1) continue;
+      const base = ground.groundElev;
+      const height = base + climb * altExaggeration;
+      const halfWidth = Math.min(60, Math.max(12, Math.log10(climb + 10) * 8));
+      const poly = squareAround(r.lon, r.lat, halfWidth);
+      const color = colorBy && ramp ? ramp(normalise(pickVal(r, colorBy) ?? 0, vMin, vMax)) : undefined;
+      features.push({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [poly] },
+        properties: {
+          __recordIndex: i,
+          __color: color,
+          __base: base,
+          __height: height,
+        },
+      });
+    }
+  }
+  return features;
+}
+
+// Roughly 50 m of horizontal spread → still treat as "fixed location".
+function isFixedPosition(records: SampleRecord[]): boolean {
+  if (records.length < 2) return true;
+  let latMin = Infinity, latMax = -Infinity, lonMin = Infinity, lonMax = -Infinity;
+  for (const r of records) {
+    if (r.lat < latMin) latMin = r.lat;
+    if (r.lat > latMax) latMax = r.lat;
+    if (r.lon < lonMin) lonMin = r.lon;
+    if (r.lon > lonMax) lonMax = r.lon;
+  }
+  return latMax - latMin < 0.0006 && lonMax - lonMin < 0.001;
+}
+
+function thinTo<T>(arr: T[], target: number): T[] {
+  if (arr.length <= target) return arr;
+  const step = arr.length / target;
+  const out: T[] = [];
+  for (let i = 0; i < arr.length; i += step) {
+    out.push(arr[Math.min(arr.length - 1, Math.floor(i))]);
+  }
+  if (out[out.length - 1] !== arr[arr.length - 1]) out.push(arr[arr.length - 1]);
+  return out;
 }
 
 function squareAround(lon: number, lat: number, halfWidthMeters: number): [number, number][] {
