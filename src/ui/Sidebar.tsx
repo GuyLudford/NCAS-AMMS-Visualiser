@@ -8,6 +8,20 @@ function hasAltitude(d: Dataset): boolean {
   return d.records.some((r) => r.alt != null && Number.isFinite(r.alt));
 }
 
+// Skew-T is meaningful for datasets that carry pressure (or altitude that
+// can be converted) plus temperature + dew point (or RH to derive Td).
+function canDoSkewT(d: Dataset): boolean {
+  if (d.kind !== 'profile' && d.kind !== 'track') return false;
+  let nWithBoth = 0;
+  for (const r of d.records) {
+    const t = r.values.air_temperature;
+    const tdOrRh = r.values.dew_point ?? r.values.relative_humidity;
+    if (t != null && tdOrRh != null) nWithBoth++;
+    if (nWithBoth >= 3) return true;
+  }
+  return false;
+}
+
 function categoryFor(d: Dataset): string {
   const inst = String(d.meta.instrument ?? '');
   if (inst.startsWith('UAV')) return 'UAV';
@@ -169,8 +183,13 @@ export function Sidebar() {
                 </label>
               )}
               {d.kind !== 'photos' && d.kind !== 'attachment' && (
-                <button className="plots-button" onClick={() => expandDataset(d.id)}>
+                <button className="plots-button" onClick={() => expandDataset(d.id, 'plots')}>
                   View all plots →
+                </button>
+              )}
+              {canDoSkewT(d) && (
+                <button className="plots-button" onClick={() => expandDataset(d.id, 'skewt')}>
+                  Open skew-T →
                 </button>
               )}
               {(d.kind === 'track' || d.kind === 'profile' || d.kind === 'stations') && (

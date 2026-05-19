@@ -89,6 +89,15 @@ main { flex: 1 1 auto; position: relative; min-width: 0; overflow: hidden; }
   font-size: 13px;
 }
 
+.skewt-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+.skewt-wrap canvas {
+  display: block;
+}
+
 .plot-card { position: relative; }
 .png-button {
   position: absolute;

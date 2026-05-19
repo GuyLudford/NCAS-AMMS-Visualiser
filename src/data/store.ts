@@ -6,6 +6,8 @@ interface Selection {
   recordIndex?: number;
 }
 
+export type ExpandedMode = 'plots' | 'skewt';
+
 interface AppState {
   datasets: Dataset[];
   selection: Selection | null;
@@ -13,6 +15,7 @@ interface AppState {
   warnings: { source: string; messages: string[] }[];
   timeWindow: { start: number; end: number } | null;
   expandedDatasetId: string | null;
+  expandedMode: ExpandedMode;
   altitudeExaggeration: number;
   showAltitudeTowers: boolean;
   compareSelected: string[];
@@ -22,7 +25,7 @@ interface AppState {
   setSelection: (sel: Selection | null) => void;
   setHover: (sel: Selection | null) => void;
   addWarnings: (source: string, messages: string[]) => void;
-  expandDataset: (id: string | null) => void;
+  expandDataset: (id: string | null, mode?: ExpandedMode) => void;
   setAltitudeExaggeration: (n: number) => void;
   setShowAltitudeTowers: (v: boolean) => void;
   setTimeWindow: (w: { start: number; end: number } | null) => void;
@@ -38,6 +41,7 @@ export const useStore = create<AppState>((set) => ({
   warnings: [],
   timeWindow: null,
   expandedDatasetId: null,
+  expandedMode: 'plots',
   altitudeExaggeration: 3,
   showAltitudeTowers: true,
   compareSelected: [],
@@ -57,7 +61,7 @@ export const useStore = create<AppState>((set) => ({
   setHover: (sel) => set({ hover: sel }),
   addWarnings: (source, messages) =>
     messages.length > 0 ? set((s) => ({ warnings: [...s.warnings, { source, messages }] })) : undefined,
-  expandDataset: (id) => set({ expandedDatasetId: id }),
+  expandDataset: (id, mode = 'plots') => set({ expandedDatasetId: id, expandedMode: mode }),
   setAltitudeExaggeration: (n) => set({ altitudeExaggeration: n }),
   setShowAltitudeTowers: (v) => set({ showAltitudeTowers: v }),
   setTimeWindow: (w) => set({ timeWindow: w }),

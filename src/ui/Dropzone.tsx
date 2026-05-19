@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../data/store';
 import { parseFiles } from '../data/parsers';
+import { buildDemoData } from '../data/demo';
 
 export function Dropzone() {
   const addDatasets = useStore((s) => s.addDatasets);
@@ -70,10 +71,11 @@ export function Dropzone() {
           <p>
             Drop AMMSS data files anywhere on this page, or click <strong>+ Add data</strong> in the sidebar. Supported:
             UAV (<code>.h5</code> / <code>UAV_data*.csv</code>), Windsond (<code>.sounding.csv</code>,{' '}
-            <code>.raw_flight_history.csv</code>), sky-camera met (<code>*WxSensor.csv</code>), Kestrels (
-            <code>WEATHER - *.csv</code>), walk workbooks (<code>NCAS_AMMSS_Blencathra_*.xlsx</code>), photos with GPS
-            EXIF.
+            <code>.raw_flight_history.csv</code>, <code>.raw.csv</code>, <code>.sharppy.txt</code>, <code>.kml</code>), sky-camera met (
+            <code>*WxSensor.csv</code>), Kestrels (<code>WEATHER - *.csv</code>), walk workbooks (
+            <code>NCAS_AMMSS_Blencathra_*.xlsx</code>), backpack loggers, HOBO references, photos with GPS EXIF.
           </p>
+          <button onClick={() => addDatasets(buildDemoData())}>Load synthetic demo data</button>
         </div>
       )}
     </>

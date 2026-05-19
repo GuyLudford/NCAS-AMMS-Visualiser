@@ -5,6 +5,7 @@ import { useStore } from '../data/store';
 import { BASEMAPS } from './basemaps';
 import { BLENCATHRA_CENTRE, FSC_BLENCATHRA } from '../data/normalise/coords';
 import { rampForVariable, normalise } from '../lib/colorScales';
+import { decodeShare, applyToMap } from '../lib/share';
 import type { Dataset, SampleRecord } from '../data/types';
 
 interface FeatureSel {
@@ -53,6 +54,8 @@ export function Map({ basemap }: { basemap: string }) {
     map.addControl(new maplibregl.GlobeControl(), 'top-right');
     map.addControl(new maplibregl.TerrainControl({ source: TERRAIN_SOURCE_ID, exaggeration: 1.4 }), 'top-right');
     mapRef.current = map;
+    // Expose the instance for the share-link button to read view state.
+    (containerRef.current as any).maplibreInstance = map;
 
     const onStyleLoad = () => {
       try {
@@ -103,6 +106,9 @@ export function Map({ basemap }: { basemap: string }) {
       } catch {
         /* ignore */
       }
+      // Apply any view state from the URL hash on first load.
+      const share = decodeShare(window.location.hash);
+      if (share) applyToMap(map, share);
       setReady(true);
     };
     map.on('style.load', onStyleLoad);
@@ -503,22 +509,44 @@ function buildTowers(
       });
     }
   } else {
-    // Variable-position track: one tower per (thinned) sample, each from
-    // local ground to the sample's altitude.
-    for (const { r, i } of thinned) {
-      const climb = Math.max(0, r.alt! - ground.minAlt);
+    // Variable-position track: build a continuous "ribbon" by connecting
+    // each thinned pair with a thin polygon extruded to the segment's
+    // mid-altitude. Renders as a wall snaking through 3D space — much
+    // cleaner than N discrete poles.
+    for (let k = 0; k < thinned.length - 1; k++) {
+      const a = thinned[k];
+      const b = thinned[k + 1];
+      const climbA = Math.max(0, a.r.alt! - ground.minAlt);
+      const climbB = Math.max(0, b.r.alt! - ground.minAlt);
+      const climb = (climbA + climbB) / 2;
       if (climb < 1) continue;
       const base = ground.groundElev;
       const height = base + climb * altExaggeration;
-      const halfWidth = Math.min(60, Math.max(12, Math.log10(climb + 10) * 8));
-      const poly = squareAround(r.lon, r.lat, halfWidth);
-      const color = colorBy && ramp ? ramp(normalise(pickVal(r, colorBy) ?? 0, vMin, vMax)) : undefined;
-      const t = r.time ? Math.floor(new Date(r.time).getTime() / 1000) : null;
+      // Build a thin quad along the line from a → b with a small
+      // perpendicular offset so it has area to extrude.
+      const widthM = 8;
+      const dLatPerM = 1 / 111320;
+      const dLonPerM = 1 / (111320 * Math.cos((a.r.lat * Math.PI) / 180));
+      const dLat = b.r.lat - a.r.lat;
+      const dLon = b.r.lon - a.r.lon;
+      const horiz = Math.hypot(dLat / dLatPerM, dLon / dLonPerM) || 1;
+      // Perpendicular unit vector in metres → degrees
+      const px = (-dLon / dLonPerM / horiz) * widthM * dLonPerM;
+      const py = (dLat / dLatPerM / horiz) * widthM * dLatPerM;
+      const poly: [number, number][] = [
+        [a.r.lon - px, a.r.lat - py],
+        [a.r.lon + px, a.r.lat + py],
+        [b.r.lon + px, b.r.lat + py],
+        [b.r.lon - px, b.r.lat - py],
+        [a.r.lon - px, a.r.lat - py],
+      ];
+      const color = colorBy && ramp ? ramp(normalise(pickVal(a.r, colorBy) ?? 0, vMin, vMax)) : undefined;
+      const t = a.r.time ? Math.floor(new Date(a.r.time).getTime() / 1000) : null;
       features.push({
         type: 'Feature',
         geometry: { type: 'Polygon', coordinates: [poly] },
         properties: {
-          __recordIndex: i,
+          __recordIndex: a.i,
           __color: color,
           __base: base,
           __height: height,
