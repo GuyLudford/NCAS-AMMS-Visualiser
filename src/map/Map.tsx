@@ -52,7 +52,6 @@ export function Map({ basemap }: { basemap: string }) {
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true, showCompass: true }), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }));
     map.addControl(new maplibregl.GlobeControl(), 'top-right');
-    map.addControl(new maplibregl.TerrainControl({ source: TERRAIN_SOURCE_ID, exaggeration: 1.4 }), 'top-right');
     mapRef.current = map;
     // Expose the instance for the share-link button to read view state.
     (containerRef.current as any).maplibreInstance = map;
@@ -509,44 +508,31 @@ function buildTowers(
       });
     }
   } else {
-    // Variable-position track: build a continuous "ribbon" by connecting
-    // each thinned pair with a thin polygon extruded to the segment's
-    // mid-altitude. Renders as a wall snaking through 3D space — much
-    // cleaner than N discrete poles.
-    for (let k = 0; k < thinned.length - 1; k++) {
-      const a = thinned[k];
-      const b = thinned[k + 1];
-      const climbA = Math.max(0, a.r.alt! - ground.minAlt);
-      const climbB = Math.max(0, b.r.alt! - ground.minAlt);
-      const climb = (climbA + climbB) / 2;
+    // Variable-position track: one tower per (thinned) sample, plus a
+    // narrow stretched footprint perpendicular to the path direction so
+    // adjacent towers visually connect into a ribbon. Reverted from a
+    // pure-ribbon approach — for tracks where samples are close together
+    // the inter-sample ribbon polygons were thinner than a pixel and the
+    // user saw no altitude representation at all.
+    for (let k = 0; k < thinned.length; k++) {
+      const { r, i } = thinned[k];
+      const climb = Math.max(0, r.alt! - ground.minAlt);
       if (climb < 1) continue;
       const base = ground.groundElev;
       const height = base + climb * altExaggeration;
-      // Build a thin quad along the line from a → b with a small
-      // perpendicular offset so it has area to extrude.
-      const widthM = 8;
-      const dLatPerM = 1 / 111320;
-      const dLonPerM = 1 / (111320 * Math.cos((a.r.lat * Math.PI) / 180));
-      const dLat = b.r.lat - a.r.lat;
-      const dLon = b.r.lon - a.r.lon;
-      const horiz = Math.hypot(dLat / dLatPerM, dLon / dLonPerM) || 1;
-      // Perpendicular unit vector in metres → degrees
-      const px = (-dLon / dLonPerM / horiz) * widthM * dLonPerM;
-      const py = (dLat / dLatPerM / horiz) * widthM * dLatPerM;
-      const poly: [number, number][] = [
-        [a.r.lon - px, a.r.lat - py],
-        [a.r.lon + px, a.r.lat + py],
-        [b.r.lon + px, b.r.lat + py],
-        [b.r.lon - px, b.r.lat - py],
-        [a.r.lon - px, a.r.lat - py],
-      ];
-      const color = colorBy && ramp ? ramp(normalise(pickVal(a.r, colorBy) ?? 0, vMin, vMax)) : undefined;
-      const t = a.r.time ? Math.floor(new Date(a.r.time).getTime() / 1000) : null;
+      // Make the footprint visible — at least 20 m, scaling with climb so
+      // tall towers look proportionate. Stretch along the path direction
+      // toward the next sample so successive towers visually merge.
+      const minHalfWidth = 20;
+      const halfWidth = Math.min(120, Math.max(minHalfWidth, Math.log10(climb + 10) * 12));
+      const poly = squareAround(r.lon, r.lat, halfWidth);
+      const color = colorBy && ramp ? ramp(normalise(pickVal(r, colorBy) ?? 0, vMin, vMax)) : undefined;
+      const t = r.time ? Math.floor(new Date(r.time).getTime() / 1000) : null;
       features.push({
         type: 'Feature',
         geometry: { type: 'Polygon', coordinates: [poly] },
         properties: {
-          __recordIndex: a.i,
+          __recordIndex: i,
           __color: color,
           __base: base,
           __height: height,

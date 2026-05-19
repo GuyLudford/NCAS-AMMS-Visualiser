@@ -4,9 +4,7 @@ import type { Dataset, SampleRecord } from '../data/types';
 import {
   dewPointFromRh,
   dryAdiabatT,
-  mixingRatio,
   pressureFromAltitude,
-  satVapourPressure,
   tFromMixingRatio,
 } from '../lib/atmospheric';
 
