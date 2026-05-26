@@ -42,7 +42,7 @@ export const useStore = create<AppState>((set) => ({
   timeWindow: null,
   expandedDatasetId: null,
   expandedMode: 'plots',
-  altitudeExaggeration: 3,
+  altitudeExaggeration: 5,
   showAltitudeTowers: true,
   compareSelected: [],
   addDatasets: (ds) =>

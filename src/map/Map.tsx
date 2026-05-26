@@ -454,118 +454,43 @@ function datasetToGeoJSON(d: Dataset, altExaggeration: number, ground: DatasetGr
   };
 }
 
-const MAX_TOWERS = 100;
-
-// Build per-sample 3D extrusion features. Two strategies depending on whether
-// the dataset is essentially a vertical profile at one location or a
-// horizontally-extended track.
+// Simple tower rendering — one tower per sample, base at 0 (sea level),
+// height = altitude × exaggeration. This is the version that was visually
+// working. No thinning, no stacking, no ribbon.
 function buildTowers(
   d: Dataset,
   ramp: ((t: number) => string) | null,
   vMin: number,
   vMax: number,
-  ground: DatasetGroundInfo,
+  _ground: DatasetGroundInfo,
   altExaggeration: number,
 ): GeoJSON.Feature[] {
   const colorBy = d.style.colorBy;
-  // Index records that have a real altitude and a position.
-  const indexed = d.records
-    .map((r, i) => ({ r, i }))
-    .filter(({ r }) => Number.isFinite(r.lat) && Number.isFinite(r.lon) && r.alt != null && Number.isFinite(r.alt));
-  if (!indexed.length) return [];
-
-  const fixedPos = isFixedPosition(indexed.map((x) => x.r));
-  const thinned = thinTo(indexed, MAX_TOWERS);
   const features: GeoJSON.Feature[] = [];
 
-  if (fixedPos) {
-    // STACKED segments: each tower starts where the previous one ended so the
-    // column shows the full climb as a continuous gradient of coloured slices.
-    const anchor = thinned[0].r;
-    const sorted = [...thinned].sort((a, b) => (a.r.alt! - b.r.alt!));
-    for (let k = 0; k < sorted.length; k++) {
-      const { r, i } = sorted[k];
-      const prevAlt = k === 0 ? ground.minAlt : sorted[k - 1].r.alt!;
-      const segLowClimb = Math.max(0, prevAlt - ground.minAlt);
-      const segHighClimb = Math.max(0, r.alt! - ground.minAlt);
-      if (segHighClimb <= segLowClimb) continue;
-      const base = ground.groundElev + segLowClimb * altExaggeration;
-      const height = ground.groundElev + segHighClimb * altExaggeration;
-      const halfWidth = 20;
-      const poly = squareAround(anchor.lon, anchor.lat, halfWidth);
-      const color = colorBy && ramp ? ramp(normalise(pickVal(r, colorBy) ?? 0, vMin, vMax)) : undefined;
-      const t = r.time ? Math.floor(new Date(r.time).getTime() / 1000) : null;
-      features.push({
-        type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: [poly] },
-        properties: {
-          __recordIndex: i,
-          __color: color,
-          __base: base,
-          __height: height,
-          __t: t,
-        },
-      });
-    }
-  } else {
-    // Variable-position track: one tower per (thinned) sample, plus a
-    // narrow stretched footprint perpendicular to the path direction so
-    // adjacent towers visually connect into a ribbon. Reverted from a
-    // pure-ribbon approach — for tracks where samples are close together
-    // the inter-sample ribbon polygons were thinner than a pixel and the
-    // user saw no altitude representation at all.
-    for (let k = 0; k < thinned.length; k++) {
-      const { r, i } = thinned[k];
-      const climb = Math.max(0, r.alt! - ground.minAlt);
-      if (climb < 1) continue;
-      const base = ground.groundElev;
-      const height = base + climb * altExaggeration;
-      // Make the footprint visible — at least 20 m, scaling with climb so
-      // tall towers look proportionate. Stretch along the path direction
-      // toward the next sample so successive towers visually merge.
-      const minHalfWidth = 20;
-      const halfWidth = Math.min(120, Math.max(minHalfWidth, Math.log10(climb + 10) * 12));
-      const poly = squareAround(r.lon, r.lat, halfWidth);
-      const color = colorBy && ramp ? ramp(normalise(pickVal(r, colorBy) ?? 0, vMin, vMax)) : undefined;
-      const t = r.time ? Math.floor(new Date(r.time).getTime() / 1000) : null;
-      features.push({
-        type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: [poly] },
-        properties: {
-          __recordIndex: i,
-          __color: color,
-          __base: base,
-          __height: height,
-          __t: t,
-        },
-      });
-    }
-  }
+  d.records.forEach((r, i) => {
+    if (!Number.isFinite(r.lat) || !Number.isFinite(r.lon)) return;
+    if (r.alt == null || !Number.isFinite(r.alt) || r.alt < 1) return;
+
+    const height = r.alt * altExaggeration;
+    if (height < 1) return;
+    const halfWidth = Math.min(40, Math.max(8, Math.log10(height + 10) * 6));
+    const poly = squareAround(r.lon, r.lat, halfWidth);
+    const color = colorBy && ramp ? ramp(normalise(pickVal(r, colorBy) ?? 0, vMin, vMax)) : undefined;
+    const t = r.time ? Math.floor(new Date(r.time).getTime() / 1000) : null;
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [poly] },
+      properties: {
+        __recordIndex: i,
+        __color: color,
+        __base: 0,
+        __height: height,
+        __t: t,
+      },
+    });
+  });
   return features;
-}
-
-// Roughly 50 m of horizontal spread → still treat as "fixed location".
-function isFixedPosition(records: SampleRecord[]): boolean {
-  if (records.length < 2) return true;
-  let latMin = Infinity, latMax = -Infinity, lonMin = Infinity, lonMax = -Infinity;
-  for (const r of records) {
-    if (r.lat < latMin) latMin = r.lat;
-    if (r.lat > latMax) latMax = r.lat;
-    if (r.lon < lonMin) lonMin = r.lon;
-    if (r.lon > lonMax) lonMax = r.lon;
-  }
-  return latMax - latMin < 0.0006 && lonMax - lonMin < 0.001;
-}
-
-function thinTo<T>(arr: T[], target: number): T[] {
-  if (arr.length <= target) return arr;
-  const step = arr.length / target;
-  const out: T[] = [];
-  for (let i = 0; i < arr.length; i += step) {
-    out.push(arr[Math.min(arr.length - 1, Math.floor(i))]);
-  }
-  if (out[out.length - 1] !== arr[arr.length - 1]) out.push(arr[arr.length - 1]);
-  return out;
 }
 
 function squareAround(lon: number, lat: number, halfWidthMeters: number): [number, number][] {
